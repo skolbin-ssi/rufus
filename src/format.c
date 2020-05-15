@@ -977,7 +977,7 @@ static BOOL WriteSBR(HANDLE hPhysicalDrive)
 
 	r = write_data(fp, br_size, buf, (uint64_t)size);
 	safe_free(grub2_buf);
-	if (sub_type == BT_NON_BOOTABLE)
+	if (sub_type == BT_MAX)
 		safe_free(buf);
 	return (r != 0);
 }
@@ -1391,9 +1391,6 @@ static BOOL SetupWinToGo(DWORD DriveIndex, const char* drive_name, BOOL use_esp)
 			return FALSE;
 		}
 		Sleep(200);
-	}
-
-	if (use_esp) {
 		// Need to have the ESP mounted to invoke bcdboot
 		ms_efi = AltMountVolume(DriveIndex, partition_offset[PI_ESP], FALSE);
 		if (ms_efi == NULL) {
