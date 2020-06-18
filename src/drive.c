@@ -34,6 +34,7 @@
 #include "rufus.h"
 #include "missing.h"
 #include "resource.h"
+#include "settings.h"
 #include "msapi_utf8.h"
 #include "localization.h"
 
@@ -70,7 +71,7 @@ PF_TYPE_DECL(NTAPI, NTSTATUS, NtQueryVolumeInformationFile, (HANDLE, PIO_STATUS_
  * Globals
  */
 RUFUS_DRIVE_INFO SelectedDrive;
-BOOL installed_uefi_ntfs;
+extern BOOL installed_uefi_ntfs, write_as_esp;
 uint64_t partition_offset[3];
 uint64_t persistence_size = 0;
 
@@ -912,25 +913,25 @@ UINT GetDriveTypeFromIndex(DWORD DriveIndex)
 }
 
 /*
- * Return the next unused drive letter from the system
+ * Return the next unused drive letter from the system or NUL on error.
  */
 char GetUnusedDriveLetter(void)
 {
 	DWORD size;
-	char drive_letter = 'Z'+1, *drive, drives[26*4 + 1];	/* "D:\", "E:\", etc., plus one NUL */
+	char drive_letter, *drive, drives[26*4 + 1];	/* "D:\", "E:\", etc., plus one NUL */
 
 	size = GetLogicalDriveStringsA(sizeof(drives), drives);
 	if (size == 0) {
 		uprintf("GetLogicalDriveStrings failed: %s", WindowsErrorString());
-		goto out;
+		return 0;
 	}
 	if (size > sizeof(drives)) {
 		uprintf("GetLogicalDriveStrings: Buffer too small (required %d vs. %d)", size, sizeof(drives));
-		goto out;
+		return 0;
 	}
 
 	for (drive_letter = 'C'; drive_letter <= 'Z'; drive_letter++) {
-		for (drive = drives ;*drive; drive += safe_strlen(drive)+1) {
+		for (drive = drives ; *drive; drive += safe_strlen(drive) + 1) {
 			if (!isalpha(*drive))
 				continue;
 			if (drive_letter == (char)toupper((int)*drive))
@@ -940,8 +941,30 @@ char GetUnusedDriveLetter(void)
 			break;
 	}
 
-out:
-	return (drive_letter>'Z')?0:drive_letter;
+	return (drive_letter > 'Z') ? 0 : drive_letter;
+}
+
+BOOL IsDriveLetterInUse(const char drive_letter)
+{
+	DWORD size;
+	char *drive, drives[26 * 4 + 1];
+
+	size = GetLogicalDriveStringsA(sizeof(drives), drives);
+	if (size == 0) {
+		uprintf("GetLogicalDriveStrings failed: %s", WindowsErrorString());
+		return TRUE;
+	}
+	if (size > sizeof(drives)) {
+		uprintf("GetLogicalDriveStrings: Buffer too small (required %d vs. %d)", size, sizeof(drives));
+		return TRUE;
+	}
+
+	for (drive = drives; *drive; drive += safe_strlen(drive) + 1) {
+		if (drive_letter == (char)toupper((int)*drive))
+			return TRUE;
+	}
+
+	return FALSE;
 }
 
 /*
@@ -1130,6 +1153,142 @@ BOOL AnalyzePBR(HANDLE hLogicalVolume)
 	return TRUE;
 }
 
+static BOOL StoreEspInfo(GUID* guid)
+{
+	uint8_t j;
+	char key_name[2][16], *str;
+	// Look for an empty slot and use that if available
+	for (j = 1; j <= MAX_ESP_TOGGLE; j++) {
+		static_sprintf(key_name[0], "ToggleEsp%02u", j);
+		str = ReadSettingStr(key_name[0]);
+		if ((str == NULL) || (str[0] == 0))
+			return WriteSettingStr(key_name[0], GuidToString(guid));
+	}
+	// All slots are used => Move every key down and add to last slot
+	// NB: No, we don't care that the slot we remove may not be the oldest.
+	for (j = 1; j < MAX_ESP_TOGGLE; j++) {
+		static_sprintf(key_name[0], "ToggleEsp%02u", j);
+		static_sprintf(key_name[1], "ToggleEsp%02u", j + 1);
+		WriteSettingStr(key_name[0], ReadSettingStr(key_name[1]));
+	}
+	return WriteSettingStr(key_name[1], GuidToString(guid));
+}
+
+static GUID* GetEspGuid(uint8_t index)
+{
+	char key_name[16];
+
+	static_sprintf(key_name, "ToggleEsp%02u", index);
+	return StringToGuid(ReadSettingStr(key_name));
+}
+
+static BOOL ClearEspInfo(uint8_t index)
+{
+	char key_name[16];
+	static_sprintf(key_name, "ToggleEsp%02u", index);
+	return WriteSettingStr(key_name, "");
+}
+
+/*
+ * This calls changes the type of a GPT ESP back and forth to Basic Data.
+ * Needed because Windows 10 doesn't mount ESPs by default, and also
+ * doesn't let usermode apps (such as File Explorer) access mounted ESPs.
+ */
+BOOL ToggleEsp(DWORD DriveIndex)
+{
+	char *volume_name, mount_point[] = DEFAULT_ESP_MOUNT_POINT;
+	BOOL r, ret = FALSE, found = FALSE;
+	HANDLE hPhysical;
+	DWORD size, i, j, esp_index = 0;
+	BYTE layout[4096] = { 0 };
+	GUID* guid;
+	PDRIVE_LAYOUT_INFORMATION_EX DriveLayout = (PDRIVE_LAYOUT_INFORMATION_EX)(void*)layout;
+
+	if (nWindowsVersion < WINDOWS_10) {
+		uprintf("ESP toggling is only available for Windows 10 or later");
+		return FALSE;
+	}
+
+	hPhysical = GetPhysicalHandle(DriveIndex, FALSE, TRUE, TRUE);
+	if (hPhysical == INVALID_HANDLE_VALUE)
+		return FALSE;
+
+	r = DeviceIoControl(hPhysical, IOCTL_DISK_GET_DRIVE_LAYOUT_EX,
+		NULL, 0, layout, sizeof(layout), &size, NULL);
+	if (!r || size <= 0) {
+		uprintf("Could not get layout for drive 0x%02x: %s", DriveIndex, WindowsErrorString());
+		goto out;
+	}
+	if (DriveLayout->PartitionStyle != PARTITION_STYLE_GPT) {
+		uprintf("ESP toggling is only available for GPT drives");
+		goto out;
+	}
+
+	// See if the current drive contains an ESP
+	for (i = 0, j = 0; i < DriveLayout->PartitionCount; i++) {
+		if (CompareGUID(&DriveLayout->PartitionEntry[i].Gpt.PartitionType, &PARTITION_GENERIC_ESP)) {
+			esp_index = i;
+			j++;
+		}
+	}
+
+	if (j > 1) {
+		uprintf("ESP toggling is not available for drives with more than one ESP");
+		goto out;
+	}
+	if (j == 1) {
+		// ESP -> Basic Data
+		i = esp_index;
+		uprintf("ESP name: '%S'", DriveLayout->PartitionEntry[i].Gpt.Name);
+		if (!StoreEspInfo(&DriveLayout->PartitionEntry[i].Gpt.PartitionId)) {
+			uprintf("ESP toggling data could not be stored");
+			goto out;
+		}
+		DriveLayout->PartitionEntry[i].Gpt.PartitionType = PARTITION_MICROSOFT_DATA;
+	} else {
+		// Basic Data -> ESP
+		for (j = 1; j <= MAX_ESP_TOGGLE; j++) {
+			guid = GetEspGuid((uint8_t)j);
+			if (guid != NULL) {
+				for (i = 0; i < DriveLayout->PartitionCount; i++) {
+					if (CompareGUID(guid, &DriveLayout->PartitionEntry[i].Gpt.PartitionId)) {
+						uprintf("BD name: '%S'", DriveLayout->PartitionEntry[i].Gpt.Name);
+						found = TRUE;
+						break;
+					}
+				}
+				if (found)
+					break;
+			}
+		}
+		if (j > MAX_ESP_TOGGLE)
+			goto out;
+		DriveLayout->PartitionEntry[i].Gpt.PartitionType = PARTITION_GENERIC_ESP;
+	}
+
+	DriveLayout->PartitionEntry[i].RewritePartition = TRUE;	// Just in case
+	r = DeviceIoControl(hPhysical, IOCTL_DISK_SET_DRIVE_LAYOUT_EX, (BYTE*)DriveLayout, size, NULL, 0, &size, NULL);
+	if (!r) {
+		uprintf("Could not set drive layout: %s", WindowsErrorString());
+		return FALSE;
+	}
+	RefreshDriveLayout(hPhysical);
+	if (CompareGUID(&DriveLayout->PartitionEntry[i].Gpt.PartitionType, &PARTITION_GENERIC_ESP)) {
+		// We successfully reverted ESP from Basic Data -> Delete stored ESP info
+		ClearEspInfo((uint8_t)j);
+	} else if (!IsDriveLetterInUse(*mount_point)) {
+		// We succesfully switched ESP to Basic Data -> Try to mount it
+		volume_name = GetLogicalName(DriveIndex, DriveLayout->PartitionEntry[i].StartingOffset.QuadPart, TRUE, FALSE);
+		MountVolume(mount_point, volume_name);
+		free(volume_name);
+	}
+	ret = TRUE;
+
+out:
+	safe_closehandle(hPhysical);
+	return ret;
+}
+
 /*
  * Fill the drive properties (size, FS, etc)
  * Returns TRUE if the drive has a partition that can be mounted in Windows, FALSE otherwise
@@ -1162,14 +1321,14 @@ BOOL GetDrivePartitionData(DWORD DriveIndex, char* FileSystemName, DWORD FileSys
 
 	hPhysical = GetPhysicalHandle(DriveIndex, FALSE, FALSE, TRUE);
 	if (hPhysical == INVALID_HANDLE_VALUE)
-		return 0;
+		return FALSE;
 
 	r = DeviceIoControl(hPhysical, IOCTL_DISK_GET_DRIVE_GEOMETRY_EX,
 			NULL, 0, geometry, sizeof(geometry), &size, NULL);
 	if (!r || size <= 0) {
 		suprintf("Could not get geometry for drive 0x%02x: %s", DriveIndex, WindowsErrorString());
 		safe_closehandle(hPhysical);
-		return 0;
+		return FALSE;
 	}
 	SelectedDrive.DiskSize = DiskGeometry->DiskSize.QuadPart;
 	SelectedDrive.SectorSize = DiskGeometry->Geometry.BytesPerSector;
@@ -1192,7 +1351,7 @@ BOOL GetDrivePartitionData(DWORD DriveIndex, char* FileSystemName, DWORD FileSys
 	if (!r || size <= 0) {
 		suprintf("Could not get layout for drive 0x%02x: %s", DriveIndex, WindowsErrorString());
 		safe_closehandle(hPhysical);
-		return 0;
+		return FALSE;
 	}
 
 #if defined(__GNUC__)
@@ -1282,8 +1441,10 @@ BOOL GetDrivePartitionData(DWORD DriveIndex, char* FileSystemName, DWORD FileSys
 			}
 			SelectedDrive.nPartitions++;
 			isUefiNtfs = (wcscmp(DriveLayout->PartitionEntry[i].Gpt.Name, L"UEFI:NTFS") == 0);
-			suprintf("Partition %d%s:\r\n  Type: %s\r\n  Name: '%S'", i+1, isUefiNtfs ? " (UEFI:NTFS)" : "",
-				GetGPTPartitionType(&DriveLayout->PartitionEntry[i].Gpt.PartitionType), DriveLayout->PartitionEntry[i].Gpt.Name);
+			suprintf("Partition %d%s:\r\n  Type: %s", i+1, isUefiNtfs ? " (UEFI:NTFS)" : "",
+				GetGPTPartitionType(&DriveLayout->PartitionEntry[i].Gpt.PartitionType));
+			if (DriveLayout->PartitionEntry[i].Gpt.Name[0] != 0)
+				suprintf("  Name: '%S'", DriveLayout->PartitionEntry[i].Gpt.Name);
 			suprintf("  ID: %s\r\n  Size: %s (%" PRIi64 " bytes)\r\n  Start Sector: %" PRIi64 ", Attributes: 0x%016" PRIX64,
 				GuidToString(&DriveLayout->PartitionEntry[i].Gpt.PartitionId),
 				SizeToHumanReadable(DriveLayout->PartitionEntry[i].PartitionLength.QuadPart, TRUE, FALSE),
@@ -1523,7 +1684,8 @@ static BOOL ClearPartition(HANDLE hDrive, LARGE_INTEGER offset, DWORD size)
 BOOL CreatePartition(HANDLE hDrive, int partition_style, int file_system, BOOL mbr_uefi_marker, uint8_t extra_partitions)
 {
 	const char* PartitionTypeName[] = { "MBR", "GPT", "SFD" };
-	const wchar_t *extra_part_name = L"", *main_part_name = L"Main Data Partition";
+	const wchar_t *extra_part_name = L"", *main_part_name = write_as_esp ? L"EFI System Partition" : L"Main Data Partition";
+	const LONGLONG main_part_size = write_as_esp ? MAX_ISO_TO_ESP_SIZE * MB : SelectedDrive.DiskSize;
 	const LONGLONG bytes_per_track = ((LONGLONG)SelectedDrive.SectorsPerTrack) * SelectedDrive.SectorSize;
 	const DWORD size_to_clear = MAX_SECTORS_TO_CLEAR * SelectedDrive.SectorSize;
 	uint8_t* buffer;
@@ -1532,7 +1694,7 @@ BOOL CreatePartition(HANDLE hDrive, int partition_style, int file_system, BOOL m
 	DRIVE_LAYOUT_INFORMATION_EX4 DriveLayoutEx = {0};
 	BOOL r;
 	DWORD i, size, bufsize, pn = 0;
-	LONGLONG main_part_size_in_sectors, extra_part_size_in_tracks = 0, ms_esp_size;
+	LONGLONG main_part_size_in_sectors, extra_part_size_in_tracks = 0, esp_size;
 
 	PrintInfoDebug(0, MSG_238, PartitionTypeName[partition_style]);
 
@@ -1581,9 +1743,16 @@ BOOL CreatePartition(HANDLE hDrive, int partition_style, int file_system, BOOL m
 	}
 
 	// Set our main data partition
-	main_part_size_in_sectors = (SelectedDrive.DiskSize - DriveLayoutEx.PartitionEntry[pn].StartingOffset.QuadPart) /
-		// Need 33 sectors at the end for secondary GPT
-		SelectedDrive.SectorSize - ((partition_style == PARTITION_STYLE_GPT)?33:0);
+	if (write_as_esp) {
+		// Align ESP to 64 MB while leaving at least 32 MB free space
+		esp_size = (((img_report.projected_size / MB) + 96) / 64) * 64 * MB;
+		main_part_size_in_sectors = (esp_size - DriveLayoutEx.PartitionEntry[pn].StartingOffset.QuadPart) /
+			SelectedDrive.SectorSize;
+	} else {
+		main_part_size_in_sectors = (main_part_size - DriveLayoutEx.PartitionEntry[pn].StartingOffset.QuadPart) /
+			// Need 33 sectors at the end for secondary GPT
+			SelectedDrive.SectorSize - ((partition_style == PARTITION_STYLE_GPT) ? 33 : 0);
+	}
 	if (extra_partitions) {
 		// Adjust the size according to extra partitions (which we always align to a track)
 		if (extra_partitions & XP_ESP) {
@@ -1594,10 +1763,10 @@ BOOL CreatePartition(HANDLE hDrive, int partition_style, int file_system, BOOL m
 			// https://docs.microsoft.com/en-us/windows-hardware/manufacture/desktop/configure-uefigpt-based-hard-drive-partitions
 			// is too small. See: https://github.com/pbatard/rufus/issues/979
 			if (SelectedDrive.SectorSize <= 4096)
-				ms_esp_size = 300 * MB;
+				esp_size = 300 * MB;
 			else
-				ms_esp_size = 1200 * MB;	// That'll teach you to have a nonstandard disk!
-			extra_part_size_in_tracks = (ms_esp_size + bytes_per_track - 1) / bytes_per_track;
+				esp_size = 1200 * MB;	// That'll teach you to have a nonstandard disk!
+			extra_part_size_in_tracks = (esp_size + bytes_per_track - 1) / bytes_per_track;
 		} else if (extra_partitions & XP_UEFI_NTFS) {
 			extra_part_name = L"UEFI:NTFS";
 			extra_part_size_in_tracks = (max(MIN_EXTRA_PART_SIZE, uefi_ntfs_size) + bytes_per_track - 1) / bytes_per_track;
@@ -1650,7 +1819,7 @@ BOOL CreatePartition(HANDLE hDrive, int partition_style, int file_system, BOOL m
 			return FALSE;
 		}
 	} else {
-		DriveLayoutEx.PartitionEntry[pn].Gpt.PartitionType = PARTITION_MICROSOFT_DATA;
+		DriveLayoutEx.PartitionEntry[pn].Gpt.PartitionType = write_as_esp ? PARTITION_GENERIC_ESP : PARTITION_MICROSOFT_DATA;
 		IGNORE_RETVAL(CoCreateGuid(&DriveLayoutEx.PartitionEntry[pn].Gpt.PartitionId));
 		wcsncpy(DriveLayoutEx.PartitionEntry[pn].Gpt.Name, main_part_name, ARRAYSIZE(DriveLayoutEx.PartitionEntry[pn].Gpt.Name));
 	}
@@ -1800,7 +1969,7 @@ BOOL InitializeDisk(HANDLE hDrive)
 	DWORD size;
 	CREATE_DISK CreateDisk = {PARTITION_STYLE_RAW, {{0}}};
 
-	PrintInfoDebug(0, MSG_239);
+	uprintf("Initializing disk...");
 
 	size = sizeof(CreateDisk);
 	r = DeviceIoControl(hDrive, IOCTL_DISK_CREATE_DISK,

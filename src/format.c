@@ -66,7 +66,7 @@ extern uint32_t dur_mins, dur_secs;
 extern uint32_t wim_nb_files, wim_proc_files, wim_extra_files;
 static int actual_fs_type, wintogo_index = -1, wininst_index = 0;
 extern BOOL force_large_fat32, enable_ntfs_compression, lock_drive, zero_drive, fast_zeroing, enable_file_indexing, write_as_image;
-extern BOOL use_vds;
+extern BOOL use_vds, write_as_esp;
 uint8_t *grub2_buf = NULL, *sec_buf = NULL;
 long grub2_len;
 
@@ -342,7 +342,7 @@ static BOOL FormatNativeVds(DWORD DriveIndex, uint64_t PartitionOffset, DWORD Cl
 	VolumeName = GetLogicalName(DriveIndex, PartitionOffset, TRUE, TRUE);
 	wVolumeName = utf8_to_wchar(VolumeName);
 	if (wVolumeName == NULL) {
-		uprintf("Could not read volume name");
+		uprintf("Could not read volume name (%s)", VolumeName);
 		FormatStatus = ERROR_SEVERITY_ERROR | FAC(FACILITY_STORAGE) | ERROR_GEN_FAILURE;
 		goto out;
 	}
@@ -583,7 +583,7 @@ static BOOL FormatNative(DWORD DriveIndex, uint64_t PartitionOffset, DWORD Clust
 	VolumeName = GetLogicalName(DriveIndex, PartitionOffset, TRUE, TRUE);
 	wVolumeName = utf8_to_wchar(VolumeName);
 	if (wVolumeName == NULL) {
-		uprintf("Could not read volume name");
+		uprintf("Could not read volume name (%s)", VolumeName);
 		FormatStatus = ERROR_SEVERITY_ERROR|FAC(FACILITY_STORAGE)|ERROR_GEN_FAILURE;
 		goto out;
 	}
@@ -1534,7 +1534,7 @@ static BOOL WriteDrive(HANDLE hPhysicalDrive, HANDLE hSourceImage)
 		}
 		assert((uintptr_t)sec_buf % SelectedDrive.SectorSize == 0);
 		sec_buf_pos = 0;
-		bled_init(_uprintf, NULL, sector_write, update_progress, &FormatStatus);
+		bled_init(_uprintf, NULL, sector_write, update_progress, NULL, &FormatStatus);
 		bled_ret = bled_uncompress_with_handles(hSourceImage, hPhysicalDrive, img_report.compression_type);
 		bled_exit();
 		if ((bled_ret >= 0) && (sec_buf_pos != 0)) {
@@ -1779,7 +1779,7 @@ DWORD WINAPI FormatThread(void* param)
 	// It kind of blows, but we have to relinquish access to the physical drive
 	// for VDS to be able to delete the partitions that reside on it...
 	safe_unlockclose(hPhysicalDrive);
-	PrintInfoDebug(0, MSG_239);
+	PrintInfoDebug(0, MSG_239, lmprintf(MSG_307));
 	if (!DeletePartitions(DriveIndex)) {
 		SetLastError(FormatStatus);
 		uprintf("Notice: Could not delete partitions: %s", WindowsErrorString());
@@ -1997,7 +1997,7 @@ DWORD WINAPI FormatThread(void* param)
 	if (fs_type < FS_EXT2)
 		ToValidLabel(label, (fs_type == FS_FAT16) || (fs_type == FS_FAT32) || (fs_type == FS_EXFAT));
 	ClusterSize = (DWORD)ComboBox_GetItemData(hClusterSize, ComboBox_GetCurSel(hClusterSize));
-	if (ClusterSize < 0x200)
+	if ((ClusterSize < 0x200) || (write_as_esp))
 		ClusterSize = 0;	// 0 = default cluster size
 
 	Flags = FP_FORCE;
@@ -2162,7 +2162,7 @@ DWORD WINAPI FormatThread(void* param)
 				}
 				// EFI mode selected, with no 'boot###.efi' but Windows 7 x64's 'bootmgr.efi' (bit #0)
 				if (((target_type == TT_UEFI) || allow_dual_uefi_bios) && HAS_WIN7_EFI(img_report)) {
-					PrintInfoDebug(0, MSG_232);
+					PrintInfoDebug(0, MSG_232, lmprintf(MSG_307));
 					img_report.wininst_path[0][0] = drive_name[0];
 					efi_dst[0] = drive_name[0];
 					efi_dst[sizeof(efi_dst) - sizeof("\\bootx64.efi")] = 0;

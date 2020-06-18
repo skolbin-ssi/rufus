@@ -116,7 +116,7 @@ BOOL enable_HDDs = FALSE, enable_VHDs = TRUE, enable_ntfs_compression = FALSE, n
 BOOL advanced_mode_device, advanced_mode_format, allow_dual_uefi_bios, detect_fakes, enable_vmdk, force_large_fat32, usb_debug;
 BOOL use_fake_units, preserve_timestamps = FALSE, fast_zeroing = FALSE, app_changed_size = FALSE;
 BOOL zero_drive = FALSE, list_non_usb_removable_drives = FALSE, enable_file_indexing, large_drive = FALSE;
-BOOL write_as_image = FALSE, installed_uefi_ntfs = FALSE, enable_fido = FALSE, use_vds = FALSE;
+BOOL write_as_image = FALSE, write_as_esp = FALSE, installed_uefi_ntfs = FALSE, use_vds = FALSE;
 float fScale = 1.0f;
 int dialog_showing = 0, selection_default = BT_IMAGE, windows_to_go_selection = 0, persistence_unit_selection = -1;
 int default_fs, fs_type, boot_type, partition_type, target_type; // file system, boot type, partition type, target type
@@ -126,7 +126,7 @@ char embedded_sl_version_str[2][12] = { "?.??", "?.??" };
 char embedded_sl_version_ext[2][32];
 char ClusterSizeLabel[MAX_CLUSTER_SIZES][64];
 char msgbox[1024], msgbox_title[32], *ini_file = NULL, *image_path = NULL, *short_image_path;
-char image_option_txt[128], *fido_url = NULL;
+char *archive_path = NULL, image_option_txt[128], *fido_url = NULL;
 StrArray DriveId, DriveName, DriveLabel, DriveHub, BlockingProcess, ImageList;
 // Number of steps for each FS for FCC_STRUCTURE_PROGRESS
 const int nb_steps[FS_MAX] = { 5, 5, 12, 1, 10, 1, 1, 1, 1 };
@@ -1052,6 +1052,7 @@ static void DisplayISOProps(void)
 
 	PRINT_ISO_PROP(img_report.has_4GB_file, "  Has a >4GB file");
 	PRINT_ISO_PROP(img_report.has_long_filename, "  Has a >64 chars filename");
+	PRINT_ISO_PROP(img_report.has_deep_directories, "  Has a Rock Ridge deep directory");
 	PRINT_ISO_PROP(HAS_SYSLINUX(img_report), "  Uses: Syslinux/Isolinux v%s", img_report.sl_version_str);
 	if (HAS_SYSLINUX(img_report) && (SL_MAJOR(img_report.sl_version) < 5)) {
 		for (i = 0; i<NB_OLD_C32; i++) {
@@ -2233,6 +2234,24 @@ static INT_PTR CALLBACK MainCallback(HWND hDlg, UINT message, WPARAM wParam, LPA
 			partition_type = (int)ComboBox_GetItemData(hTargetSystem, ComboBox_GetCurSel(hTargetSystem));
 			return (INT_PTR)TRUE;
 		case IDC_SELECT:
+			// Ctrl-SELECT is used to select an additional archive of files to extract
+			// For now only zip archives are supported.
+			if (GetKeyState(VK_CONTROL) & 0x8000) {
+				EXT_DECL(arch_ext, NULL, __VA_GROUP__("*.zip"), __VA_GROUP__(lmprintf(MSG_309)));
+				if (image_path == NULL)
+					break;
+				archive_path = FileDialog(FALSE, NULL, &arch_ext, 0);
+				if (archive_path != NULL) {
+					struct __stat64 stat64 = { 0 };
+					_stat64U(archive_path, &stat64);
+					img_report.projected_size -= img_report.archive_size;
+					img_report.archive_size = stat64.st_size;
+					img_report.projected_size += img_report.archive_size;
+					uprintf("Using archive: %s (%s)", _filenameU(archive_path),
+						SizeToHumanReadable(img_report.archive_size, FALSE, FALSE));
+				}
+				break;
+			}
 			if (select_index == 1) {
 				EnableControls(FALSE, FALSE);
 				DownloadISO();
@@ -2243,7 +2262,7 @@ static INT_PTR CALLBACK MainCallback(HWND hDlg, UINT message, WPARAM wParam, LPA
 				} else {
 					char* old_image_path = image_path;
 					// If declared globaly, lmprintf(MSG_036) would be called on each message...
-					EXT_DECL(img_ext, NULL, __VA_GROUP__("*.iso;*.img;*.vhd;*.gz;*.bzip2;*.bz2;*.xz;*.lzma;*.Z;*.zip"),
+					EXT_DECL(img_ext, NULL, __VA_GROUP__("*.iso;*.img;*.vhd;*.usb;*.bz2;*.bzip2;*.gz;*.lzma;*.xz;*.Z;*.zip"),
 						__VA_GROUP__(lmprintf(MSG_036)));
 					image_path = FileDialog(FALSE, NULL, &img_ext, 0);
 					if (image_path == NULL) {
@@ -2256,6 +2275,7 @@ static INT_PTR CALLBACK MainCallback(HWND hDlg, UINT message, WPARAM wParam, LPA
 						}
 						break;
 					} else {
+						safe_free(archive_path);
 						free(old_image_path);
 					}
 				}
@@ -2286,6 +2306,7 @@ static INT_PTR CALLBACK MainCallback(HWND hDlg, UINT message, WPARAM wParam, LPA
 			target_type = (int)ComboBox_GetItemData(hTargetSystem, ComboBox_GetCurSel(hTargetSystem));
 			fs_type = (int)ComboBox_GetItemData(hFileSystem, ComboBox_GetCurSel(hFileSystem));
 			write_as_image = FALSE;
+			write_as_esp = FALSE;
 			installed_uefi_ntfs = FALSE;
 			// Disable all controls except Cancel
 			EnableControls(FALSE, FALSE);
@@ -2469,10 +2490,14 @@ static INT_PTR CALLBACK MainCallback(HWND hDlg, UINT message, WPARAM wParam, LPA
 		MessageBoxA(NULL, "This is a Test version of " APPLICATION_NAME " - It is meant to be used for "
 			"testing ONLY and should NOT be distributed as a release.", "TEST VERSION", MSG_INFO);
 #endif
+		// Let's not take any risk: Ask Windows to redraw the whole dialog before we exit init
+		RedrawWindow(hMainDialog, NULL, NULL, RDW_ALLCHILDREN | RDW_UPDATENOW);
+		InvalidateRect(hMainDialog, NULL, TRUE);
+
 		return (INT_PTR)FALSE;
 
-		// The things one must do to get an ellipsis and text alignment on the status bar...
 	case WM_DRAWITEM:
+		// The things one must do to get an ellipsis and text alignment on the status bar...
 		if (wParam == IDC_STATUS) {
 			pDI = (DRAWITEMSTRUCT*)lParam;
 			if (nWindowsVersion >= WINDOWS_10)
@@ -2676,17 +2701,42 @@ static INT_PTR CALLBACK MainCallback(HWND hDlg, UINT message, WPARAM wParam, LPA
 					if (persistence_size == 0) {
 						char* iso_image = lmprintf(MSG_036);
 						char* dd_image = lmprintf(MSG_095);
-						char* choices[2] = { lmprintf(MSG_276, iso_image), lmprintf(MSG_277, dd_image) };
-						i = SelectionDialog(lmprintf(MSG_274), lmprintf(MSG_275, iso_image, dd_image, iso_image, dd_image),
-							choices, 2);
-						if (i < 0)	// Cancel
-							goto aborted_start;
-						else if (i == 2)
-							write_as_image = TRUE;
+						// If the ISO is small enough to be written as an ESP and we are using GPT add the ISO → ESP option
+						if ((img_report.projected_size < MAX_ISO_TO_ESP_SIZE * MB) && HAS_REGULAR_EFI(img_report) &&
+							(partition_type == PARTITION_STYLE_GPT) && IS_FAT(fs_type)) {
+							char* choices[3] = { lmprintf(MSG_276, iso_image), lmprintf(MSG_277, "ISO → ESP"), lmprintf(MSG_277, dd_image) };
+							i = SelectionDialog(lmprintf(MSG_274), lmprintf(MSG_275, iso_image, dd_image, iso_image, dd_image),
+								choices, 3);
+							if (i < 0)	// Cancel
+								goto aborted_start;
+							else if (i == 2)
+								write_as_esp = TRUE;
+							else if (i == 3)
+								write_as_image = TRUE;
+						} else {
+							char* choices[2] = { lmprintf(MSG_276, iso_image), lmprintf(MSG_277, dd_image) };
+							i = SelectionDialog(lmprintf(MSG_274), lmprintf(MSG_275, iso_image, dd_image, iso_image, dd_image),
+								choices, 2);
+							if (i < 0)	// Cancel
+								goto aborted_start;
+							else if (i == 2)
+								write_as_image = TRUE;
+						}
 					}
 				} else {
 					write_as_image = TRUE;
 				}
+			} else if ((img_report.projected_size < MAX_ISO_TO_ESP_SIZE * MB) && HAS_REGULAR_EFI(img_report) &&
+				(partition_type == PARTITION_STYLE_GPT) && IS_FAT(fs_type)) {
+				// The ISO is small enough to be written as an ESP and we are using GPT
+				// so ask the users if they want to write it as an ESP.
+				char* iso_image = lmprintf(MSG_036);
+				char* choices[2] = { lmprintf(MSG_276, iso_image), lmprintf(MSG_277, "ISO → ESP") };
+				i = SelectionDialog(lmprintf(MSG_274), lmprintf(MSG_310), choices, 2);
+				if (i < 0)	// Cancel
+					goto aborted_start;
+				else if (i == 2)
+					write_as_esp = TRUE;
 			}
 		}
 
@@ -3236,8 +3286,7 @@ relaunch:
 	image_option_txt[0] = 0;
 	select_index = 0;
 	safe_free(fido_url);
-	enable_fido = FALSE;
-	SetProcessDefaultLayout(right_to_left_mode?LAYOUT_RTL:0);
+	SetProcessDefaultLayout(right_to_left_mode ? LAYOUT_RTL : 0);
 	if (get_loc_data_file(loc_file, selected_locale))
 		WriteSettingStr(SETTING_LOCALE, selected_locale->txt[0]);
 
@@ -3281,7 +3330,7 @@ relaunch:
 	while(GetMessage(&msg, NULL, 0, 0)) {
 		static BOOL ctrl_without_focus = FALSE;
 		BOOL no_focus = (msg.message == WM_SYSKEYDOWN) && !(msg.lParam & 0x20000000);
-		// ** ****** **** ** **********
+		// ** ****** **** *************
 		// .,ABCDEFGHIJKLMNOPQRSTUVWXYZ
 
 		// Sigh... The things one need to do to detect standalone use of the 'Alt' key.
@@ -3396,7 +3445,7 @@ relaunch:
 			if ((msg.message == WM_SYSKEYDOWN) && (msg.wParam == 'G')) {
 				enable_VHDs = !enable_VHDs;
 				WriteSettingBool(SETTING_DISABLE_VHDS, !enable_VHDs);
-				PrintStatusTimeout(lmprintf(MSG_307), enable_VHDs);
+				PrintStatusTimeout(lmprintf(MSG_308), enable_VHDs);
 				GetDevices(0);
 				continue;
 			}
@@ -3445,6 +3494,14 @@ relaunch:
 			// Alt-O => Save from Optical drive to ISO
 			if ((msg.message == WM_SYSKEYDOWN) && (msg.wParam == 'O')) {
 				SaveISO();
+				continue;
+			}
+			// Alt-P => Toggle GPT ESP to and from Basic Data type (Windows 10 or later)
+			if ((msg.message == WM_SYSKEYDOWN) && (msg.wParam == 'P')) {
+				int index = ComboBox_GetCurSel(hDeviceList);
+				DWORD DeviceNum = (DWORD)ComboBox_GetItemData(hDeviceList, index);
+				if (ToggleEsp(DeviceNum))
+					CyclePort(index);
 				continue;
 			}
 			// Alt-Q => Enable file indexing (for file systems that support it)
@@ -3602,6 +3659,7 @@ out:
 	ClrAlertPromptHook();
 	exit_localization();
 	safe_free(image_path);
+	safe_free(archive_path);
 	safe_free(locale_name);
 	safe_free(update.download_url);
 	safe_free(update.release_notes);

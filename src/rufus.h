@@ -71,6 +71,8 @@
 #define MAX_REFRESH                 25			// How long we should wait to refresh UI elements (in ms)
 #define MAX_GUID_STRING_LENGTH      40
 #define MAX_PARTITIONS              16			// Maximum number of partitions we handle
+#define MAX_ESP_TOGGLE              8			// Maximum number of entries we record to toggle GPT ESP back and forth
+#define MAX_ISO_TO_ESP_SIZE         512			// Maximum size we allow for the ISO → ESP option (in MB)
 #define MAX_SECTORS_TO_CLEAR        128			// nb sectors to zap when clearing the MBR/GPT (must be >34)
 #define MAX_WININST                 4			// Max number of install[.wim|.esd] we can handle on an image
 #define MBR_UEFI_MARKER             0x49464555	// 'U', 'E', 'F', 'I', as a 32 bit little endian longword
@@ -111,6 +113,7 @@
 #define WPPRECORDER_MORE_INFO_URL   "https://github.com/pbatard/rufus/wiki/FAQ#BSODs_with_Windows_To_Go_drives_created_from_Windows_10_1809_ISOs"
 #define SEVENZIP_URL                "https://www.7-zip.org"
 #define FILES_DIR                   "rufus_files"
+#define DEFAULT_ESP_MOUNT_POINT     "S:\\"
 #define IS_POWER_OF_2(x)            ((x != 0) && (((x) & ((x) - 1)) == 0))
 #define IGNORE_RETVAL(expr)         do { (void)(expr); } while(0)
 #ifndef ARRAYSIZE
@@ -301,6 +304,7 @@ enum checksum_type {
 #define HAS_BOOTMGR_BIOS(r) (r.has_bootmgr)
 #define HAS_BOOTMGR_EFI(r)  (r.has_bootmgr_efi)
 #define HAS_BOOTMGR(r)      (HAS_BOOTMGR_BIOS(r) || HAS_BOOTMGR_EFI(r))
+#define HAS_REGULAR_EFI(r)  (r.has_efi & 0x7E)
 #define HAS_WININST(r)      (r.wininst_index != 0)
 #define HAS_WINPE(r)        (((r.winpe & WINPE_I386) == WINPE_I386)||((r.winpe & WINPE_AMD64) == WINPE_AMD64)||((r.winpe & WINPE_MININT) == WINPE_MININT))
 #define HAS_WINDOWS(r)      (HAS_BOOTMGR(r) || (r.uses_minint) || HAS_WINPE(r))
@@ -324,6 +328,7 @@ typedef struct {
 	char wininst_path[MAX_WININST][64];	// path to the Windows install image(s)
 	char efi_img_path[128];				// path to an efi.img file
 	uint64_t image_size;
+	uint64_t archive_size;
 	uint64_t projected_size;
 	int64_t mismatch_size;
 	uint32_t wininst_version;
@@ -338,6 +343,7 @@ typedef struct {
 	uint8_t has_symlinks;
 	BOOLEAN has_4GB_file;
 	BOOLEAN has_long_filename;
+	BOOLEAN has_deep_directories;
 	BOOLEAN has_bootmgr;
 	BOOLEAN has_bootmgr_efi;
 	BOOLEAN has_autorun;
@@ -484,6 +490,7 @@ extern void UpdateProgressWithInfo(int op, int msg, uint64_t processed, uint64_t
 #define UpdateProgressWithInfoInit(hProgressDialog, bNoAltMode) UpdateProgressWithInfo(OP_INIT, (int)bNoAltMode, (uint64_t)(uintptr_t)hProgressDialog, 0);
 extern const char* StrError(DWORD error_code, BOOL use_default_locale);
 extern char* GuidToString(const GUID* guid);
+extern GUID* StringToGuid(const char* str);
 extern char* SizeToHumanReadable(uint64_t size, BOOL copy_to_log, BOOL fake_units);
 extern char* TimestampToHumanReadable(uint64_t ts);
 extern HWND MyCreateDialog(HINSTANCE hInstance, int Dialog_ID, HWND hWndParent, DLGPROC lpDialogFunc);
