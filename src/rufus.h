@@ -62,6 +62,7 @@
 #define DRIVE_INDEX_MAX             0x000000C0
 #define MIN_DRIVE_SIZE              8			// Minimum size a drive must have, to be formattable (in MB)
 #define MIN_EXTRA_PART_SIZE         (1024*1024)	// Minimum size of the extra partition, in bytes
+#define MAX_ARCHS                   6			// Number of arhitectures we recognize
 #define MAX_DRIVES                  (DRIVE_INDEX_MAX - DRIVE_INDEX_MIN)
 #define MAX_TOOLTIPS                128
 #define MAX_SIZE_SUFFIXES           6			// bytes, KB, MB, GB, TB, PB
@@ -128,6 +129,8 @@
 // Bit masks used for the display of additional image options in the UI
 #define IMOP_WINTOGO                0x01
 #define IMOP_PERSISTENCE            0x02
+
+#define ComboBox_GetCurItemData(hCtrl) ComboBox_GetItemData(hCtrl, ComboBox_GetCurSel(hCtrl))
 
 #define safe_free(p) do {free((void*)p); p = NULL;} while(0)
 #define safe_mm_free(p) do {_mm_free((void*)p); p = NULL;} while(0)
@@ -284,6 +287,7 @@ enum checksum_type {
 	CHECKSUM_MD5 = 0,
 	CHECKSUM_SHA1,
 	CHECKSUM_SHA256,
+	CHECKSUM_SHA512,
 	CHECKSUM_MAX
 };
 
@@ -335,6 +339,7 @@ typedef struct {
 	BOOLEAN is_iso;
 	BOOLEAN is_bootable_img;
 	BOOLEAN is_vhd;
+	BOOLEAN is_windows_img;
 	BOOLEAN disable_iso;
 	uint16_t winpe;
 	uint8_t has_efi;
@@ -450,7 +455,7 @@ enum CpuArch {
 extern RUFUS_UPDATE update;
 extern RUFUS_IMG_REPORT img_report;
 extern HINSTANCE hMainInstance;
-extern HWND hMainDialog, hLogDialog, hStatus, hDeviceList, hCapacity;
+extern HWND hMainDialog, hLogDialog, hStatus, hDeviceList, hCapacity, hImageOption;
 extern HWND hPartitionScheme, hTargetSystem, hFileSystem, hClusterSize, hLabel, hBootType, hNBPasses, hLog;
 extern HWND hInfo, hProgress, hDiskID;
 extern WORD selected_langid;
@@ -552,10 +557,10 @@ extern char* replace_in_token_data(const char* filename, const char* token, cons
 extern char* replace_char(const char* src, const char c, const char* rep);
 extern void parse_update(char* buf, size_t len);
 extern void* get_data_from_asn1(const uint8_t* buf, size_t buf_len, const char* oid_str, uint8_t asn1_type, size_t* data_len);
-extern uint8_t WimExtractCheck(void);
-extern BOOL WimExtractFile(const char* wim_image, int index, const char* src, const char* dst);
-extern BOOL WimExtractFile_API(const char* image, int index, const char* src, const char* dst);
-extern BOOL WimExtractFile_7z(const char* image, int index, const char* src, const char* dst);
+extern uint8_t WimExtractCheck(BOOL bSilent);
+extern BOOL WimExtractFile(const char* wim_image, int index, const char* src, const char* dst, BOOL bSilent);
+extern BOOL WimExtractFile_API(const char* image, int index, const char* src, const char* dst, BOOL bSilent);
+extern BOOL WimExtractFile_7z(const char* image, int index, const char* src, const char* dst, BOOL bSilent);
 extern BOOL WimApplyImage(const char* image, int index, const char* dst);
 extern BOOL IsBootableImage(const char* path);
 extern BOOL AppendVHDFooter(const char* vhd_path);

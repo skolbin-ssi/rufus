@@ -89,7 +89,8 @@ static const char* ldlinux_c32 = "ldlinux.c32";
 static const char* md5sum_name[] = { "MD5SUMS", "md5sum.txt" };
 static const char* casper_dirname = "/casper";
 static const char* efi_dirname = "/efi/boot";
-static const char* efi_bootname[] = { "bootia32.efi", "bootia64.efi", "bootx64.efi", "bootarm.efi", "bootaa64.efi", "bootebc.efi" };
+static const char* efi_bootname[MAX_ARCHS] =
+	{ "bootia32.efi", "bootia64.efi", "bootx64.efi", "bootarm.efi", "bootaa64.efi", "bootebc.efi" };
 static const char* sources_str = "/sources";
 static const char* wininst_name[] = { "install.wim", "install.esd", "install.swm" };
 // We only support GRUB/BIOS (x86) that uses a standard config dir (/boot/grub/i386-pc/)
@@ -249,7 +250,7 @@ static BOOL check_iso_props(const char* psz_dirname, int64_t file_length, const 
 
 		// Check for the EFI boot entries
 		if (safe_stricmp(psz_dirname, efi_dirname) == 0) {
-			for (i=0; i<ARRAYSIZE(efi_bootname); i++)
+			for (i = 0; i < ARRAYSIZE(efi_bootname); i++)
 				if (safe_stricmp(psz_basename, efi_bootname[i]) == 0)
 					img_report.has_efi |= (2 << i);	// start at 2 since "bootmgr.efi" is bit 0
 		}
@@ -631,7 +632,7 @@ static void update_md5sum(void)
 	free(md5_data);
 }
 
-// Returns 0 on success, nonzero on error
+// Returns 0 on success, >0 on error, <0 to ignore current dir
 static int iso_extract_files(iso9660_t* p_iso, const char *psz_path)
 {
 	HANDLE file_handle = NULL;
@@ -668,9 +669,20 @@ static int iso_extract_files(iso9660_t* p_iso, const char *psz_path)
 	_CDIO_LIST_FOREACH(p_entnode, p_entlist) {
 		if (FormatStatus) goto out;
 		p_statbuf = (iso9660_stat_t*) _cdio_list_node_data(p_entnode);
-		if ((p_statbuf->rr.b3_rock == yep) && enable_rockridge) {
-			if (p_statbuf->rr.u_su_fields & ISO_ROCK_SUF_PL)
+		if (scan_only && (p_statbuf->rr.b3_rock == yep) && enable_rockridge) {
+			if (p_statbuf->rr.u_su_fields & ISO_ROCK_SUF_PL) {
 				img_report.has_deep_directories = TRUE;
+				// Due to the nature of the parsing of Rock Ridge deep directories
+				// which requires performing a *very costly* search of the whole
+				// ISO9660 file system to find the matching LSN, ISOs with loads of
+				// deep directory entries (e.g. OPNsense) are very slow to parse...
+				// To speed up the scan process, and since we expect deep directory
+				// entries to appear below anything we care for, we cut things
+				// short by telling the parent not to bother any further once we
+				// find that we are dealing with a deep directory.
+				r = -1;
+				goto out;
+			}
 		}
 		// Eliminate . and .. entries
 		if ( (strcmp(p_statbuf->filename, ".") == 0)
@@ -702,15 +714,18 @@ static int iso_extract_files(iso9660_t* p_iso, const char *psz_path)
 				}
 				safe_free(psz_sanpath);
 			}
-			if (iso_extract_files(p_iso, psz_iso_name))
+			r = iso_extract_files(p_iso, psz_iso_name);
+			if (r > 0)
 				goto out;
+			if (r < 0)	// Stop processing current dir
+				break;
 		} else {
 			file_length = p_statbuf->total_size;
 			if (check_iso_props(psz_path, file_length, psz_basename, psz_fullpath, &props)) {
 				continue;
 			}
 			print_extracted_file(psz_fullpath, file_length);
-			for (i=0; i<NB_OLD_C32; i++) {
+			for (i = 0; i < NB_OLD_C32; i++) {
 				if (props.is_old_c32[i] && use_own_c32[i]) {
 					static_sprintf(tmp, "%s/syslinux-%s/%s", FILES_DIR, embedded_sl_version_str[0], old_c32_name[i]);
 					if (CopyFileU(tmp, psz_fullpath, FALSE)) {
@@ -1030,7 +1045,7 @@ out:
 		if (img_report.has_grub2) {
 			// In case we have a GRUB2 based iso, we extract boot/grub/i386-pc/normal.mod to parse its version
 			img_report.grub2_version[0] = 0;
-			if ((GetTempPathU(sizeof(path), path) != 0) && (GetTempFileNameU(path, APPLICATION_NAME, 0, path) != 0)) {
+			if (GetTempFileNameU(temp_dir, APPLICATION_NAME, 0, path) != 0) {
 				size = (size_t)ExtractISOFile(src_iso, "boot/grub/i386-pc/normal.mod", path, FILE_ATTRIBUTE_NORMAL);
 				buf = (char*)calloc(size, 1);
 				fd = fopen(path, "rb");
