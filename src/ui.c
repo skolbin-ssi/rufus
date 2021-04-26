@@ -1,7 +1,7 @@
 /*
  * Rufus: The Reliable USB Formatting Utility
  * UI-related function calls
- * Copyright © 2018-2020 Pete Batard <pete@akeo.ie>
+ * Copyright © 2018-2021 Pete Batard <pete@akeo.ie>
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -44,7 +44,7 @@
 
 UINT_PTR UM_LANGUAGE_MENU_MAX = UM_LANGUAGE_MENU;
 HIMAGELIST hUpImageList, hDownImageList;
-extern BOOL use_vds;
+extern BOOL use_vds, appstore_version;
 int update_progress_type = UPT_PERCENT;
 int advanced_device_section_height, advanced_format_section_height;
 // (empty) check box width, (empty) drop down width, button height (for and without dropdown match)
@@ -76,7 +76,7 @@ void SetAccessibleName(HWND hCtrl, const char* name)
 
 	SetWindowTextW(hCtrl, wname);
 	if (pfaps == NULL)
-		CoCreateInstance(&CLSID_AccPropServices, NULL, CLSCTX_INPROC, &IID_IAccPropServices, (LPVOID)&pfaps);
+		IGNORE_RETVAL(CoCreateInstance(&CLSID_AccPropServices, NULL, CLSCTX_INPROC, &IID_IAccPropServices, (LPVOID)&pfaps));
 	if (pfaps != NULL) {
 		IAccPropServices_ClearHwndProps(pfaps, hCtrl, OBJID_CLIENT, CHILDID_SELF, props, ARRAYSIZE(props));
 		IAccPropServices_SetHwndPropStr(pfaps, hCtrl, OBJID_CLIENT, CHILDID_SELF, Name_Property_GUID, wname);
@@ -529,7 +529,7 @@ void AdjustForLowDPI(HWND hDlg)
 	for (i = 0; i < ARRAYSIZE(adjust_dpi_ids); i++) {
 		dy += ddy;
 		// "...and the other thing I really like about Microsoft's UI handling is how "
-		//."you never have to introduce weird hardcoded constants all over the place, "
+		// "you never have to introduce weird hardcoded constants all over the place, "
 		// "just to make your UI look good...", said NO ONE ever.
 		if (adjust_dpi_ids[i][0] == IDC_QUICK_FORMAT)
 			dy += 1;
@@ -671,7 +671,7 @@ void ToggleAdvancedFormatOptions(BOOL enable)
 	InvalidateRect(hMainDialog, NULL, TRUE);
 }
 
-// Toggle the display of peristence unit dropdown and resize the size field
+// Toggle the display of persistence unit dropdown and resize the size field
 void TogglePersistenceControls(BOOL display)
 {
 	RECT rc;
@@ -747,12 +747,15 @@ void SetPersistenceSize(void)
 			persistence_unit_selection = proposed_unit_selection;
 
 		IGNORE_RETVAL(ComboBox_SetCurSel(hCtrl, persistence_unit_selection));
+		if ((pos != 0) && (pos < MIN_EXT_SIZE))
+			pos = MIN_EXT_SIZE;
 		pos /= MB;
 		max /= MB;
 		for (i = 0; i < persistence_unit_selection; i++) {
 			pos /= 1024;
 			max /= 1024;
 		}
+
 	}
 
 	hCtrl = GetDlgItem(hMainDialog, IDC_PERSISTENCE_SLIDER);
@@ -1015,13 +1018,16 @@ static INT_PTR CALLBACK ProgressCallback(HWND hCtrl, UINT message, WPARAM wParam
 
 void CreateAdditionalControls(HWND hDlg)
 {
+	int buttons_list[] = { IDC_LANG, IDC_ABOUT, IDC_SETTINGS, IDC_LOG };
+	int bitmaps_list[] = { 0, 1, 2, 3 };
 	HINSTANCE hDll;
 	HIMAGELIST hToolbarImageList;
 	HICON hIcon, hIconUp, hIconDown;
 	RECT rc;
 	SIZE sz;
-	int icon_offset = 0, i, i16, s16, toolbar_dx = -4 - ((fScale > 1.49f) ? 1 : 0) - ((fScale > 1.99f) ? 1 : 0);
-	TBBUTTON tbToolbarButtons[7];
+	int icon_offset = 0, i, i16, s16, size;
+	int toolbar_dx = -4 - ((fScale > 1.49f) ? 1 : 0) - ((fScale > 1.99f) ? 1 : 0);
+	TBBUTTON tbToolbarButtons[ARRAYSIZE(buttons_list) * 2 - 1];
 	unsigned char* buffer;
 	DWORD bufsize;
 
@@ -1116,35 +1122,27 @@ void CreateAdditionalControls(HWND hDlg)
 	SendMessage(hMultiToolbar, TB_SETIMAGELIST, (WPARAM)0, (LPARAM)hToolbarImageList);
 	SendMessage(hMultiToolbar, TB_BUTTONSTRUCTSIZE, (WPARAM)sizeof(TBBUTTON), 0);
 	memset(tbToolbarButtons, 0, sizeof(TBBUTTON) * ARRAYSIZE(tbToolbarButtons));
-	tbToolbarButtons[0].idCommand = IDC_LANG;
-	tbToolbarButtons[0].fsStyle = BTNS_BUTTON;
-	tbToolbarButtons[0].fsState = TBSTATE_ENABLED;
-	tbToolbarButtons[0].iBitmap = 0;
-	tbToolbarButtons[1].fsStyle = BTNS_AUTOSIZE;
-	tbToolbarButtons[1].fsState = TBSTATE_INDETERMINATE;
-	tbToolbarButtons[1].iBitmap = I_IMAGENONE;
-	tbToolbarButtons[1].iString = (fScale < 1.5f) ? (INT_PTR)L"" : (INT_PTR)L" ";
-	tbToolbarButtons[2].idCommand = IDC_ABOUT;
-	tbToolbarButtons[2].fsStyle = BTNS_BUTTON;
-	tbToolbarButtons[2].fsState = TBSTATE_ENABLED;
-	tbToolbarButtons[2].iBitmap = 1;
-	tbToolbarButtons[3].fsStyle = BTNS_AUTOSIZE;
-	tbToolbarButtons[3].fsState = TBSTATE_INDETERMINATE;
-	tbToolbarButtons[3].iBitmap = I_IMAGENONE;
-	tbToolbarButtons[3].iString = (fScale < 1.5f) ? (INT_PTR)L"" : (INT_PTR)L" ";
-	tbToolbarButtons[4].idCommand = IDC_SETTINGS;
-	tbToolbarButtons[4].fsStyle = BTNS_BUTTON;
-	tbToolbarButtons[4].fsState = TBSTATE_ENABLED;
-	tbToolbarButtons[4].iBitmap = 2;
-	tbToolbarButtons[5].fsStyle = BTNS_AUTOSIZE;
-	tbToolbarButtons[5].fsState = TBSTATE_INDETERMINATE;
-	tbToolbarButtons[5].iBitmap = I_IMAGENONE;
-	tbToolbarButtons[5].iString = (fScale < 1.5f) ? (INT_PTR)L"" : (INT_PTR)L" ";
-	tbToolbarButtons[6].idCommand = IDC_LOG;
-	tbToolbarButtons[6].fsStyle = BTNS_BUTTON;
-	tbToolbarButtons[6].fsState = TBSTATE_ENABLED;
-	tbToolbarButtons[6].iBitmap = 3;
-	SendMessage(hMultiToolbar, TB_ADDBUTTONS, (WPARAM)7, (LPARAM)&tbToolbarButtons);
+	size = 2 * ARRAYSIZE(buttons_list) - 1;
+	if (appstore_version) {
+		// Remove the Update Settings button for the AppStore version
+		buttons_list[2] = buttons_list[3];
+		bitmaps_list[2] = bitmaps_list[3];
+		size -= 2;
+	}
+	for (i = 0; i < size; i++) {
+		if (i % 2 == 0) {
+			tbToolbarButtons[i].idCommand = buttons_list[i / 2];
+			tbToolbarButtons[i].fsStyle = BTNS_BUTTON;
+			tbToolbarButtons[i].fsState = TBSTATE_ENABLED;
+			tbToolbarButtons[i].iBitmap = bitmaps_list[i / 2];
+		} else {
+			tbToolbarButtons[i].fsStyle = BTNS_AUTOSIZE;
+			tbToolbarButtons[i].fsState = TBSTATE_INDETERMINATE;
+			tbToolbarButtons[i].iBitmap = I_IMAGENONE;
+			tbToolbarButtons[i].iString = (fScale < 1.5f) ? (INT_PTR)L"" : (INT_PTR)L" ";
+		}
+	}
+	SendMessage(hMultiToolbar, TB_ADDBUTTONS, (WPARAM)i, (LPARAM)&tbToolbarButtons);
 	SendMessage(hMultiToolbar, TB_SETBUTTONSIZE, 0, MAKELPARAM(i16, ddbh));
 	SetAccessibleName(hMultiToolbar, lmprintf(MSG_315));
 
@@ -1552,11 +1550,11 @@ void ShowLanguageMenu(RECT rcExclude)
 void SetPassesTooltip(void)
 {
 	const unsigned int pattern[BADLOCKS_PATTERN_TYPES][BADBLOCK_PATTERN_COUNT] =
-	{ BADBLOCK_PATTERN_SLC, BADCLOCK_PATTERN_MLC, BADBLOCK_PATTERN_TLC };
+	{ BADBLOCK_PATTERN_ONE_PASS, BADBLOCK_PATTERN_TWO_PASSES, BADBLOCK_PATTERN_SLC,
+	  BADCLOCK_PATTERN_MLC, BADBLOCK_PATTERN_TLC };
 	int sel = ComboBox_GetCurSel(hNBPasses);
-	int type = (sel < 2) ? 0 : sel - 2;
 	CreateTooltip(hNBPasses, lmprintf(MSG_153 + ((sel >= 2) ? 3 : sel),
-		pattern[type][0], pattern[type][1], pattern[type][2], pattern[type][3]), -1);
+		pattern[sel][0], pattern[sel][1], pattern[sel][2], pattern[sel][3]), -1);
 }
 
 void SetBootTypeDropdownWidth(void)

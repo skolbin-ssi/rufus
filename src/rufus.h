@@ -1,6 +1,6 @@
 /*
  * Rufus: The Reliable USB Formatting Utility
- * Copyright © 2011-2020 Pete Batard <pete@akeo.ie>
+ * Copyright © 2011-2021 Pete Batard <pete@akeo.ie>
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -62,7 +62,8 @@
 #define DRIVE_INDEX_MAX             0x000000C0
 #define MIN_DRIVE_SIZE              8			// Minimum size a drive must have, to be formattable (in MB)
 #define MIN_EXTRA_PART_SIZE         (1024*1024)	// Minimum size of the extra partition, in bytes
-#define MAX_ARCHS                   6			// Number of arhitectures we recognize
+#define MIN_EXT_SIZE                (256*1024*1024)	// Minimum size we allow for ext formatting
+#define MAX_ARCHS                   9			// Number of arhitectures we recognize
 #define MAX_DRIVES                  (DRIVE_INDEX_MAX - DRIVE_INDEX_MIN)
 #define MAX_TOOLTIPS                128
 #define MAX_SIZE_SUFFIXES           6			// bytes, KB, MB, GB, TB, PB
@@ -81,24 +82,29 @@
 #define STATUS_MSG_TIMEOUT          3500		// How long should cheat mode messages appear for on the status bar
 #define WRITE_RETRIES               4
 #define WRITE_TIMEOUT               5000		// How long we should wait between write retries (in ms)
+#if defined(_DEBUG)
+#define SEARCH_PROCESS_TIMEOUT      60000
+#else
 #define SEARCH_PROCESS_TIMEOUT      10000		// How long we should search for conflicting processes before giving up (in ms)
+#endif
 #define NET_SESSION_TIMEOUT         3500		// How long we should wait to connect, send or receive internet data
-#define CHECK_DRIVE_TIMEOUT         2000
 #define MARQUEE_TIMER_REFRESH       10			// Time between progress bar marquee refreshes, in ms
 #define FS_DEFAULT                  FS_FAT32
 #define SINGLE_CLUSTERSIZE_DEFAULT  0x00000100
-#define BADLOCKS_PATTERN_TYPES      3
+#define BADLOCKS_PATTERN_TYPES      5
 #define BADBLOCK_PATTERN_COUNT      4
+#define BADBLOCK_PATTERN_ONE_PASS   {0x55, 0x00, 0x00, 0x00}
+#define BADBLOCK_PATTERN_TWO_PASSES {0x55, 0xaa, 0x00, 0x00}
 #define BADBLOCK_PATTERN_SLC        {0x00, 0xff, 0x55, 0xaa}
 #define BADCLOCK_PATTERN_MLC        {0x00, 0xff, 0x33, 0xcc}
 #define BADBLOCK_PATTERN_TLC        {0x00, 0xff, 0x1c71c7, 0xe38e38}
-#define BADBLOCK_BLOCK_SIZE         (128 * 1024)
-#define LARGE_FAT32_SIZE            (32*1073741824LL)	// Size at which we need to use fat32format
+#define BADBLOCK_BLOCK_SIZE         (512 * 1024)
+#define LARGE_FAT32_SIZE            (32 * 1073741824LL)	// Size at which we need to use fat32format
 #define UDF_FORMAT_SPEED            3.1f		// Speed estimate at which we expect UDF drives to be formatted (GB/s)
 #define UDF_FORMAT_WARN             20			// Duration (in seconds) above which we warn about long UDF formatting times
 #define MAX_FAT32_SIZE              2.0f		// Threshold above which we disable FAT32 formatting (in TB)
 #define FAT32_CLUSTER_THRESHOLD     1.011f		// For FAT32, cluster size changes don't occur at power of 2 boundaries but sligthly above
-#define DD_BUFFER_SIZE              65536		// Minimum size of the buffer we use for DD operations
+#define DD_BUFFER_SIZE              (32 * 1024 * 1024)	// Minimum size of buffer to use for DD operations
 #define UBUFFER_SIZE                4096
 #define RSA_SIGNATURE_SIZE          256
 #define CBN_SELCHANGE_INTERNAL      (CBN_SELCHANGE + 256)
@@ -308,7 +314,7 @@ enum checksum_type {
 #define HAS_BOOTMGR_BIOS(r) (r.has_bootmgr)
 #define HAS_BOOTMGR_EFI(r)  (r.has_bootmgr_efi)
 #define HAS_BOOTMGR(r)      (HAS_BOOTMGR_BIOS(r) || HAS_BOOTMGR_EFI(r))
-#define HAS_REGULAR_EFI(r)  (r.has_efi & 0x7E)
+#define HAS_REGULAR_EFI(r)  (r.has_efi & 0x7FFE)
 #define HAS_WININST(r)      (r.wininst_index != 0)
 #define HAS_WINPE(r)        (((r.winpe & WINPE_I386) == WINPE_I386)||((r.winpe & WINPE_AMD64) == WINPE_AMD64)||((r.winpe & WINPE_MININT) == WINPE_MININT))
 #define HAS_WINDOWS(r)      (HAS_BOOTMGR(r) || (r.uses_minint) || HAS_WINPE(r))
@@ -337,12 +343,12 @@ typedef struct {
 	int64_t mismatch_size;
 	uint32_t wininst_version;
 	BOOLEAN is_iso;
-	BOOLEAN is_bootable_img;
+	uint8_t is_bootable_img;
 	BOOLEAN is_vhd;
 	BOOLEAN is_windows_img;
 	BOOLEAN disable_iso;
 	uint16_t winpe;
-	uint8_t has_efi;
+	uint16_t has_efi;
 	uint8_t has_md5sum;
 	uint8_t wininst_index;
 	uint8_t has_symlinks;
@@ -479,7 +485,6 @@ extern char *image_path, *fido_url;
 /*
  * Shared prototypes
  */
-extern uint8_t popcnt8(uint8_t val);
 extern void GetWindowsVersion(void);
 extern BOOL is_x64(void);
 extern BOOL GetCpuArch(void);
@@ -540,6 +545,7 @@ extern uint64_t DownloadToFileOrBuffer(const char* url, const char* file, BYTE**
 extern DWORD DownloadSignedFile(const char* url, const char* file, HWND hProgressDialog, BOOL PromptOnError);
 extern HANDLE DownloadSignedFileThreaded(const char* url, const char* file, HWND hProgressDialog, BOOL bPromptOnError);
 extern INT_PTR CALLBACK UpdateCallback(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam);
+extern void SetFidoCheck(void);
 extern BOOL SetUpdateCheck(void);
 extern BOOL CheckForUpdates(BOOL force);
 extern void DownloadNewVersion(void);
@@ -562,7 +568,7 @@ extern BOOL WimExtractFile(const char* wim_image, int index, const char* src, co
 extern BOOL WimExtractFile_API(const char* image, int index, const char* src, const char* dst, BOOL bSilent);
 extern BOOL WimExtractFile_7z(const char* image, int index, const char* src, const char* dst, BOOL bSilent);
 extern BOOL WimApplyImage(const char* image, int index, const char* dst);
-extern BOOL IsBootableImage(const char* path);
+extern uint8_t IsBootableImage(const char* path);
 extern BOOL AppendVHDFooter(const char* vhd_path);
 extern int SetWinToGoIndex(void);
 extern int IsHDD(DWORD DriveIndex, uint16_t vid, uint16_t pid, const char* strid);
@@ -652,7 +658,7 @@ static __inline HMODULE GetLibraryHandle(char* szLibraryName) {
 		if (OpenedLibrariesHandleSize >= MAX_LIBRARY_HANDLES) {
 			uprintf("Error: MAX_LIBRARY_HANDLES is too small\n");
 		} else {
-			h = LoadLibraryA(szLibraryName);
+			h = LoadLibraryExA(szLibraryName, NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
 			if (h != NULL)
 				OpenedLibrariesHandle[OpenedLibrariesHandleSize++] = h;
 		}

@@ -54,6 +54,7 @@ errcode_t ext2fs_symlink(ext2_filsys fs, ext2_ino_t parent, ext2_ino_t ino,
 	int			fastlink, inlinelink;
 	unsigned int		target_len;
 	char			*block_buf = 0;
+	int			drop_refcount = 0;
 
 	EXT2_CHECK_MAGIC(fs, EXT2_ET_MAGIC_EXT2FS_FILSYS);
 
@@ -103,7 +104,9 @@ errcode_t ext2fs_symlink(ext2_filsys fs, ext2_ino_t parent, ext2_ino_t ino,
 	inode.i_mode = LINUX_S_IFLNK | 0777;
 	inode.i_uid = inode.i_gid = 0;
 	inode.i_links_count = 1;
-	ext2fs_inode_size_set(fs, &inode, target_len);
+	retval = ext2fs_inode_size_set(fs, &inode, target_len);
+	if (retval)
+		goto cleanup;
 	/* The time fields are set by ext2fs_write_new_inode() */
 
 	inlinelink = !fastlink && ext2fs_has_feature_inline_data(fs->super);
@@ -163,6 +166,14 @@ need_block:
 	}
 
 	/*
+	 * Update accounting....
+	 */
+	if (!fastlink && !inlinelink)
+		ext2fs_block_alloc_stats2(fs, blk, +1);
+	ext2fs_inode_alloc_stats2(fs, ino, +1, 0);
+	drop_refcount = 1;
+
+	/*
 	 * Link the symlink into the filesystem hierarchy
 	 */
 	if (name) {
@@ -178,17 +189,16 @@ need_block:
 		if (retval)
 			goto cleanup;
 	}
-
-	/*
-	 * Update accounting....
-	 */
-	if (!fastlink && !inlinelink)
-		ext2fs_block_alloc_stats2(fs, blk, +1);
-	ext2fs_inode_alloc_stats2(fs, ino, +1, 0);
+	drop_refcount = 0;
 
 cleanup:
 	if (block_buf)
 		ext2fs_free_mem(&block_buf);
+	if (drop_refcount) {
+		if (!fastlink && !inlinelink)
+			ext2fs_block_alloc_stats2(fs, blk, -1);
+		ext2fs_inode_alloc_stats2(fs, ino, -1, 0);
+	}
 	return retval;
 }
 

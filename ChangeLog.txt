@@ -1,3 +1,37 @@
+o Version 3.14 (2021.04.??)
+    Improve DD write speed (uncompressed images only)
+    Improve checksum computation speed
+    Improve network connectivity detection
+    Only prompt for additional GRUB/Syslinux downloads when not writing in DD mode
+    Fix potential "loss" of disk after writing Ubuntu 20.10 in DD mode
+    Fix GRUB compatibility issue with Ubuntu 21.04
+    Fix Rufus MBR not being selected by default for Windows ISOs
+    Fix drag and drop being enabled during drive creation
+    Add more "exceptions" for forced DD image writing
+
+o Version 3.13 (2020.11.20)
+    Add a cheat mode (Alt-M) to accept disk images without a Boot Marker
+    Add marquee operation progress to the taskbar icon
+    Add zeroing/image writing progress to the log
+    Switch to using 0x55 and 0xAA instead of 0x00 and 0xFF for low pass badblock check
+    Switch to using fake/manufacturer units when computing the default label
+    Fix overnumerous write retries on error when writing a disk image
+    Work around Windows' abysmal handling of removable drives that contain an ESP
+    Improve mounting/unmounting of volumes
+    Update UEFI:NTFS file system drivers to version 1.7
+    Other internal fixes and improvements (VDS, error reporting, etc.)
+
+o Version 3.12 (2020.10.14)
+    Add optional SHA-512 digest algorithm (Alt-H)
+    Add a cheat mode (Alt +/-) to increase/decrease application priority
+    Enable direct provision of install.wim/install.esd for Windows To Go
+    Move Windows To Go ESP to the beginning of the drive, on systems that allow it
+    Enforce a minimum volume size of 256 MB for ext2/ext3 partitions
+    Speed up the scanning of ISOs with lots of Rock Ridge deep directory entries
+    Fix detection of GRUB version and update embedded GRUB for Ubuntu 20.10 support
+    Fix user interface labels for accessibility
+    Work around a Windows bug where the wrong drive letter may be returned
+
 o Version 3.11 (2020.06.18)
     Add Rock Ridge deep directory support
     Add an option to write small ISOs to an ESP (GPT only)

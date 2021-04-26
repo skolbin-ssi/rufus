@@ -1,7 +1,7 @@
 /*
  * Rufus: The Reliable USB Formatting Utility
  * Standard Windows function calls
- * Copyright © 2013-2019 Pete Batard <pete@akeo.ie>
+ * Copyright © 2013-2021 Pete Batard <pete@akeo.ie>
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -36,16 +36,6 @@
 int  nWindowsVersion = WINDOWS_UNDEFINED;
 int  nWindowsBuildNumber = -1;
 char WindowsVersionStr[128] = "Windows ";
-
-// __popcnt16, __popcnt, __popcnt64 are not available for ARM :(
-uint8_t popcnt8(uint8_t val)
-{
-	static const uint8_t nibble_lookup[16] = {
-		0, 1, 1, 2, 1, 2, 2, 3,
-		1, 2, 2, 3, 2, 3, 3, 4
-	};
-	return nibble_lookup[val & 0x0F] + nibble_lookup[val >> 4];
-}
 
 /*
  * Hash table functions - modified From glibc 2.3.2:
@@ -731,7 +721,7 @@ DWORD WINAPI SetLGPThread(LPVOID param)
 	GUID snap_guid = { 0x3D271CFCL, 0x2BC6, 0x4AC2, {0xB6, 0x33, 0x3B, 0xDF, 0xF5, 0xBD, 0xAB, 0x2A} };
 
 	// Reinitialize COM since it's not shared between threads
-	IGNORE_RETVAL(CoInitializeEx(NULL, COINIT_APARTMENTTHREADED));
+	IGNORE_RETVAL(CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE));
 
 	// We need an IGroupPolicyObject instance to set a Local Group Policy
 	hr = CoCreateInstance(&my_CLSID_GroupPolicyObject, NULL, CLSCTX_INPROC_SERVER, &my_IID_IGroupPolicyObject, (LPVOID*)&pLGPO);
@@ -807,6 +797,7 @@ error:
 		RegCloseKey(path_key);
 	if (pLGPO != NULL)
 		pLGPO->lpVtbl->Release(pLGPO);
+	CoUninitialize();
 	return FALSE;
 }
 

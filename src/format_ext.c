@@ -39,7 +39,7 @@
 #include "ext2fs/ext2fs.h"
 
 extern const char* FileSystemLabel[FS_MAX];
-extern io_manager nt_io_manager(void);
+extern io_manager nt_io_manager;
 extern DWORD ext2_last_winerror(DWORD default_error);
 static float ext2_percent_start = 0.0f, ext2_percent_share = 0.5f;
 const float ext2_max_marker = 80.0f;
@@ -172,6 +172,8 @@ const char* error_message(errcode_t error_code)
 	case EXT2_ET_INODE_CORRUPTED:
 	case EXT2_ET_EA_INODE_CORRUPTED:
 		return "Inode is corrupted";
+	case EXT2_ET_NO_GDESC:
+		return "Group descriptors not loaded";
 	default:
 		if ((error_code > EXT2_ET_BASE) && error_code < (EXT2_ET_BASE + 1000)) {
 			static_sprintf(error_string, "Unknown ext2fs error %ld (EXT2_ET_BASE + %ld)", error_code, error_code - EXT2_ET_BASE);
@@ -190,7 +192,7 @@ errcode_t ext2fs_print_progress(int64_t cur_value, int64_t max_value)
 		return 0;
 	UpdateProgressWithInfo(OP_FORMAT, MSG_217, (uint64_t)((ext2_percent_start * max_value) + (ext2_percent_share * cur_value)), max_value);
 	cur_value = (int64_t)(((float)cur_value / (float)max_value) * min(ext2_max_marker, (float)max_value));
-	if ((cur_value < last_value) || (cur_value > last_value)) {
+	if (cur_value != last_value) {
 		last_value = cur_value;
 		uprintfs("+");
 	}
@@ -202,8 +204,8 @@ const char* GetExtFsLabel(DWORD DriveIndex, uint64_t PartitionOffset)
 	static char label[EXT2_LABEL_LEN + 1];
 	errcode_t r;
 	ext2_filsys ext2fs = NULL;
-	io_manager manager = nt_io_manager();
-	char* volume_name = AltGetLogicalName(DriveIndex, PartitionOffset, FALSE, TRUE);
+	io_manager manager = nt_io_manager;
+	char* volume_name = GetExtPartitionName(DriveIndex, PartitionOffset);
 
 	if (volume_name == NULL)
 		return NULL;
@@ -220,6 +222,7 @@ const char* GetExtFsLabel(DWORD DriveIndex, uint64_t PartitionOffset)
 
 #define TEST_IMG_PATH               "\\??\\C:\\tmp\\disk.img"
 #define TEST_IMG_SIZE               4000		// Size in MB
+#define SET_EXT2_FORMAT_ERROR(x)    if (!IS_ERROR(FormatStatus)) FormatStatus = ext2_last_winerror(x)
 
 BOOL FormatExtFs(DWORD DriveIndex, uint64_t PartitionOffset, DWORD BlockSize, LPCSTR FSName, LPCSTR Label, DWORD Flags)
 {
@@ -237,7 +240,7 @@ BOOL FormatExtFs(DWORD DriveIndex, uint64_t PartitionOffset, DWORD BlockSize, LP
 	char* volume_name = NULL;
 	int i, count;
 	struct ext2_super_block features = { 0 };
-	io_manager manager = nt_io_manager();
+	io_manager manager = nt_io_manager;
 	blk_t journal_size;
 	blk64_t size = 0, cur;
 	ext2_filsys ext2fs = NULL;
@@ -266,7 +269,7 @@ BOOL FormatExtFs(DWORD DriveIndex, uint64_t PartitionOffset, DWORD BlockSize, LP
 	}
 	CloseHandle(h);
 #else
-	volume_name = AltGetLogicalName(DriveIndex, PartitionOffset, FALSE, TRUE);
+	volume_name = GetExtPartitionName(DriveIndex, PartitionOffset);
 #endif
 	if ((volume_name == NULL) | (strlen(FSName) != 4) || (strncmp(FSName, "ext", 3) != 0)) {
 		FormatStatus = ERROR_SEVERITY_ERROR | FAC(FACILITY_STORAGE) | ERROR_INVALID_PARAMETER;
@@ -289,7 +292,7 @@ BOOL FormatExtFs(DWORD DriveIndex, uint64_t PartitionOffset, DWORD BlockSize, LP
 	// Figure out the volume size and block size
 	r = ext2fs_get_device_size2(volume_name, KB, &size);
 	if ((r != 0) || (size == 0)) {
-		FormatStatus = ext2_last_winerror(ERROR_READ_FAULT);
+		SET_EXT2_FORMAT_ERROR(ERROR_READ_FAULT);
 		uprintf("Could not read device size: %s", error_message(r));
 		goto out;
 	}
@@ -313,7 +316,7 @@ BOOL FormatExtFs(DWORD DriveIndex, uint64_t PartitionOffset, DWORD BlockSize, LP
 	// ext2 and ext3 have a can only accomodate up to Blocksize * 2^32 sized volumes
 	if (((strcmp(FSName, FileSystemLabel[FS_EXT2]) == 0) || (strcmp(FSName, FileSystemLabel[FS_EXT3]) == 0)) &&
 		(size >= 0x100000000ULL)) {
-		FormatStatus = ext2_last_winerror(ERROR_INVALID_VOLUME_SIZE);
+		SET_EXT2_FORMAT_ERROR(ERROR_INVALID_VOLUME_SIZE);
 		uprintf("Volume size is too large for ext2 or ext3");
 		goto out;
 	}
@@ -341,7 +344,7 @@ BOOL FormatExtFs(DWORD DriveIndex, uint64_t PartitionOffset, DWORD BlockSize, LP
 	// Now that we have set our base features, initialize a virtual superblock
 	r = ext2fs_initialize(volume_name, EXT2_FLAG_EXCLUSIVE | EXT2_FLAG_64BITS, &features, manager, &ext2fs);
 	if (r != 0) {
-		FormatStatus = ext2_last_winerror(ERROR_INVALID_DATA);
+		SET_EXT2_FORMAT_ERROR(ERROR_INVALID_DATA);
 		uprintf("Could not initialize %s features: %s", FSName, error_message(r));
 		goto out;
 	}
@@ -352,7 +355,7 @@ BOOL FormatExtFs(DWORD DriveIndex, uint64_t PartitionOffset, DWORD BlockSize, LP
 	r = io_channel_write_blk64(ext2fs->io, 0, 16, buf);
 	safe_free(buf);
 	if (r != 0) {
-		FormatStatus = ext2_last_winerror(ERROR_WRITE_FAULT);
+		SET_EXT2_FORMAT_ERROR(ERROR_WRITE_FAULT);
 		uprintf("Could not zero %s superblock area: %s", FSName, error_message(r));
 		goto out;
 	}
@@ -370,7 +373,7 @@ BOOL FormatExtFs(DWORD DriveIndex, uint64_t PartitionOffset, DWORD BlockSize, LP
 
 	r = ext2fs_allocate_tables(ext2fs);
 	if (r != 0) {
-		FormatStatus = ext2_last_winerror(ERROR_INVALID_DATA);
+		SET_EXT2_FORMAT_ERROR(ERROR_INVALID_DATA);
 		uprintf("Could not allocate %s tables: %s", FSName, error_message(r));
 		goto out;
 	}
@@ -392,7 +395,7 @@ BOOL FormatExtFs(DWORD DriveIndex, uint64_t PartitionOffset, DWORD BlockSize, LP
 			* EXT2_INODE_SIZE(ext2fs->super), EXT2_BLOCK_SIZE(ext2fs->super));
 		r = ext2fs_zero_blocks2(ext2fs, cur, count, &cur, &count);
 		if (r != 0) {
-			FormatStatus = ext2_last_winerror(ERROR_WRITE_FAULT);
+			SET_EXT2_FORMAT_ERROR(ERROR_WRITE_FAULT);
 			uprintf("\r\nCould not zero inode set at position %llu (%d blocks): %s", cur, count, error_message(r));
 			goto out;
 		}
@@ -402,14 +405,14 @@ BOOL FormatExtFs(DWORD DriveIndex, uint64_t PartitionOffset, DWORD BlockSize, LP
 	// Create root and lost+found dirs
 	r = ext2fs_mkdir(ext2fs, EXT2_ROOT_INO, EXT2_ROOT_INO, 0);
 	if (r != 0) {
-		FormatStatus = ext2_last_winerror(ERROR_DIR_NOT_ROOT);
+		SET_EXT2_FORMAT_ERROR(ERROR_DIR_NOT_ROOT);
 		uprintf("Failed to create %s root dir: %s", FSName, error_message(r));
 		goto out;
 	}
 	ext2fs->umask = 077;
 	r = ext2fs_mkdir(ext2fs, EXT2_ROOT_INO, 0, "lost+found");
 	if (r != 0) {
-		FormatStatus = ext2_last_winerror(ERROR_DIR_NOT_ROOT);
+		SET_EXT2_FORMAT_ERROR(ERROR_DIR_NOT_ROOT);
 		uprintf("Failed to create %s 'lost+found' dir: %s", FSName, error_message(r));
 		goto out;
 	}
@@ -421,14 +424,14 @@ BOOL FormatExtFs(DWORD DriveIndex, uint64_t PartitionOffset, DWORD BlockSize, LP
 
 	r = ext2fs_mark_inode_bitmap2(ext2fs->inode_map, EXT2_BAD_INO);
 	if (r != 0) {
-		FormatStatus = ext2_last_winerror(ERROR_WRITE_FAULT);
+		SET_EXT2_FORMAT_ERROR(ERROR_WRITE_FAULT);
 		uprintf("Could not set inode bitmaps: %s", error_message(r));
 		goto out;
 	}
 	ext2fs_inode_alloc_stats(ext2fs, EXT2_BAD_INO, 1);
 	r = ext2fs_update_bb_inode(ext2fs, NULL);
 	if (r != 0) {
-		FormatStatus = ext2_last_winerror(ERROR_WRITE_FAULT);
+		SET_EXT2_FORMAT_ERROR(ERROR_WRITE_FAULT);
 		uprintf("Could not set inode stats: %s", error_message(r));
 		goto out;
 	}
@@ -444,7 +447,7 @@ BOOL FormatExtFs(DWORD DriveIndex, uint64_t PartitionOffset, DWORD BlockSize, LP
 		r = ext2fs_add_journal_inode(ext2fs, journal_size, EXT2_MKJOURNAL_NO_MNT_CHECK | ((Flags & FP_QUICK) ? EXT2_MKJOURNAL_LAZYINIT : 0));
 		uprintfs("\r\n");
 		if (r != 0) {
-			FormatStatus = ext2_last_winerror(ERROR_WRITE_FAULT);
+			SET_EXT2_FORMAT_ERROR(ERROR_WRITE_FAULT);
 			uprintf("Could not create %s journal: %s", FSName, error_message(r));
 			goto out;
 		}
@@ -482,7 +485,7 @@ BOOL FormatExtFs(DWORD DriveIndex, uint64_t PartitionOffset, DWORD BlockSize, LP
 	// Finally we can call close() to get the file system gets created
 	r = ext2fs_close(ext2fs);
 	if (r != 0) {
-		FormatStatus = ext2_last_winerror(ERROR_WRITE_FAULT);
+		SET_EXT2_FORMAT_ERROR(ERROR_WRITE_FAULT);
 		uprintf("Could not create %s volume: %s", FSName, error_message(r));
 		goto out;
 	}
