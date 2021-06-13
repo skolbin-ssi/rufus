@@ -79,6 +79,7 @@
 #define MAX_WININST                 4			// Max number of install[.wim|.esd] we can handle on an image
 #define MBR_UEFI_MARKER             0x49464555	// 'U', 'E', 'F', 'I', as a 32 bit little endian longword
 #define MORE_INFO_URL               0xFFFF
+#define PROJECTED_SIZE_RATIO        110			// Percentage by which we inflate projected_size to prevent persistence overflow
 #define STATUS_MSG_TIMEOUT          3500		// How long should cheat mode messages appear for on the status bar
 #define WRITE_RETRIES               4
 #define WRITE_TIMEOUT               5000		// How long we should wait between write retries (in ms)
@@ -115,11 +116,11 @@
 #endif
 #define DOWNLOAD_URL                RUFUS_URL "/downloads"
 #define FILES_URL                   RUFUS_URL "/files"
+#define FILES_DIR                   APPLICATION_NAME
 #define FIDO_VERSION                "z1"
 #define SECURE_BOOT_MORE_INFO_URL   "https://github.com/pbatard/rufus/wiki/FAQ#Why_do_I_need_to_disable_Secure_Boot_to_use_UEFINTFS"
 #define WPPRECORDER_MORE_INFO_URL   "https://github.com/pbatard/rufus/wiki/FAQ#BSODs_with_Windows_To_Go_drives_created_from_Windows_10_1809_ISOs"
 #define SEVENZIP_URL                "https://www.7-zip.org"
-#define FILES_DIR                   "rufus_files"
 #define DEFAULT_ESP_MOUNT_POINT     "S:\\"
 #define IS_POWER_OF_2(x)            ((x != 0) && (((x) & ((x) - 1)) == 0))
 #define IGNORE_RETVAL(expr)         do { (void)(expr); } while(0)
@@ -129,6 +130,7 @@
 #ifndef STRINGIFY
 #define STRINGIFY(x)                #x
 #endif
+#define PERCENTAGE(percent, value)  ((1ULL * percent * value) / 100ULL)
 #define IsChecked(CheckBox_ID)      (IsDlgButtonChecked(hMainDialog, CheckBox_ID) == BST_CHECKED)
 #define MB_IS_RTL                   (right_to_left_mode?MB_RTLREADING|MB_RIGHT:0)
 #define CHECK_FOR_USER_CANCEL       if (IS_ERROR(FormatStatus) && (SCODE_CODE(FormatStatus) == ERROR_CANCELLED)) goto out
@@ -480,7 +482,7 @@ extern int fs_type, boot_type, partition_type, target_type;
 extern unsigned long syslinux_ldlinux_len[2];
 extern char WindowsVersionStr[128], ubuffer[UBUFFER_SIZE], embedded_sl_version_str[2][12];
 extern char szFolderPath[MAX_PATH], app_dir[MAX_PATH], temp_dir[MAX_PATH], system_dir[MAX_PATH], sysnative_dir[MAX_PATH];
-extern char *image_path, *fido_url;
+extern char app_data_dir[MAX_PATH], *image_path, *fido_url;
 
 /*
  * Shared prototypes
@@ -572,7 +574,7 @@ extern uint8_t IsBootableImage(const char* path);
 extern BOOL AppendVHDFooter(const char* vhd_path);
 extern int SetWinToGoIndex(void);
 extern int IsHDD(DWORD DriveIndex, uint16_t vid, uint16_t pid, const char* strid);
-extern char* GetSignatureName(const char* path, const char* country_code);
+extern char* GetSignatureName(const char* path, const char* country_code, BOOL bSilent);
 extern uint64_t GetSignatureTimeStamp(const char* path);
 extern LONG ValidateSignature(HWND hDlg, const char* path);
 extern BOOL ValidateOpensslSignature(BYTE* pbBuffer, DWORD dwBufferLen, BYTE* pbSignature, DWORD dwSigLen);
