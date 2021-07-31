@@ -961,8 +961,7 @@ static BOOL WriteSBR(HANDLE hPhysicalDrive)
 	}
 
 	// Ensure that we have sufficient space for the SBR
-	max_size = IsChecked(IDC_OLD_BIOS_FIXES) ?
-		(DWORD)(SelectedDrive.SectorsPerTrack * SelectedDrive.SectorSize) : 1 * MB;
+	max_size = (DWORD)SelectedDrive.PartitionOffset[0];
 	if (br_size + size > max_size) {
 		uprintf("  SBR size is too large - You may need to uncheck 'Add fixes for old BIOSes'.");
 		if (sub_type == BT_MAX)
@@ -1059,6 +1058,10 @@ BOOL WritePBR(HANDLE hLogicalVolume)
 		// Note: NTFS requires a full remount after writing the PBR. We dismount when we lock
 		// and also go through a forced remount, so that shouldn't be an issue.
 		// But with NTFS, if you don't remount, you don't boot!
+		return TRUE;
+	case FS_EXT2:
+	case FS_EXT3:
+	case FS_EXT4:
 		return TRUE;
 	default:
 		uprintf("Unsupported FS for FS BR processing - aborting\n");
@@ -1638,6 +1641,7 @@ static BOOL WriteDrive(HANDLE hPhysicalDrive, BOOL bZeroDrive)
 		bled_init(_uprintf, NULL, sector_write, update_progress, NULL, &FormatStatus);
 		bled_ret = bled_uncompress_with_handles(hSourceImage, hPhysicalDrive, img_report.compression_type);
 		bled_exit();
+		uprintfs("\r\n");
 		if ((bled_ret >= 0) && (sec_buf_pos != 0)) {
 			// A disk image that doesn't end up on disk boundary should be a rare
 			// enough case, so we dont bother checking the write operation and
@@ -1961,22 +1965,22 @@ DWORD WINAPI FormatThread(void* param)
 	if ((boot_type == BT_IMAGE) && write_as_image) {
 		WriteDrive(hPhysicalDrive, FALSE);
 
-	// Trying to mount accessible partitions after writing an image leads to the
-	// creation of the infamous 'System Volume Information' folder on ESPs, which
-	// in turn leads to checksum errors for Ubuntu's boot/grub/efi.img (that maps
-	// to the Ubuntu ESP). So we no longer call on the code below...
-#if 0
-		// If the image contains a partition we might be able to access, try to re-mount it
-		safe_unlockclose(hPhysicalDrive);
-		safe_unlockclose(hLogicalVolume);
-		Sleep(200);
-		WaitForLogical(DriveIndex, 0);
-		if (GetDrivePartitionData(SelectedDrive.DeviceNumber, fs_name, sizeof(fs_name), TRUE)) {
-			volume_name = GetLogicalName(DriveIndex, 0, TRUE, TRUE);
-			if ((volume_name != NULL) && (MountVolume(drive_name, volume_name)))
-				uprintf("Remounted %s as %C:", volume_name, drive_name[0]);
+		// Trying to mount accessible partitions after writing an image leads to the
+		// creation of the infamous 'System Volume Information' folder on ESPs, which
+		// in turn leads to checksum errors for Ubuntu's boot/grub/efi.img (that maps
+		// to the Ubuntu ESP). So we only call the code below for Ventoy's vtsi images.
+		if (img_report.compression_type == BLED_COMPRESSION_VTSI) {
+			// If the image contains a partition we might be able to access, try to re-mount it
+			safe_unlockclose(hPhysicalDrive);
+			safe_unlockclose(hLogicalVolume);
+			Sleep(200);
+			WaitForLogical(DriveIndex, 0);
+			if (GetDrivePartitionData(SelectedDrive.DeviceNumber, fs_name, sizeof(fs_name), TRUE)) {
+				volume_name = GetLogicalName(DriveIndex, 0, TRUE, TRUE);
+				if ((volume_name != NULL) && (MountVolume(drive_name, volume_name)))
+					uprintf("Remounted %s as %C:", volume_name, drive_name[0]);
+			}
 		}
-#endif
 		goto out;
 	}
 
