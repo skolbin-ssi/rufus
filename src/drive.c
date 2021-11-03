@@ -72,7 +72,7 @@ PF_TYPE_DECL(NTAPI, NTSTATUS, NtQueryVolumeInformationFile, (HANDLE, PIO_STATUS_
  * Globals
  */
 RUFUS_DRIVE_INFO SelectedDrive;
-extern BOOL installed_uefi_ntfs, write_as_esp;
+extern BOOL write_as_esp;
 extern int nWindowsVersion, nWindowsBuildNumber;
 uint64_t partition_offset[PI_MAX];
 uint64_t persistence_size = 0;
@@ -441,6 +441,46 @@ out:
 static const char* VdsErrorString(HRESULT hr) {
 	SetLastError(hr);
 	return WindowsErrorString();
+}
+
+/*
+ * Per https://docs.microsoft.com/en-us/windows/win32/api/combaseapi/nf-combaseapi-cocreateinstance
+ * and even though we aren't a UWP app, Windows Store prevents the ability to use of VDS when the
+ * Store version of Rufus is running (the call to IVdsServiceLoader_LoadService() will return
+ * E_ACCESSDENIED).
+ */
+BOOL IsVdsAvailable(BOOL bSilent)
+{
+	HRESULT hr = S_FALSE;
+	IVdsService* pService = NULL;
+	IVdsServiceLoader* pLoader = NULL;
+
+	// Initialize COM
+	IGNORE_RETVAL(CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE));
+	IGNORE_RETVAL(CoInitializeSecurity(NULL, -1, NULL, NULL, RPC_C_AUTHN_LEVEL_CONNECT,
+		RPC_C_IMP_LEVEL_IMPERSONATE, NULL, 0, NULL));
+
+	// Create a VDS Loader Instance
+	hr = CoCreateInstance(&CLSID_VdsLoader, NULL, CLSCTX_LOCAL_SERVER | CLSCTX_REMOTE_SERVER,
+		&IID_IVdsServiceLoader, (void**)&pLoader);
+	if (hr != S_OK) {
+		suprintf("Notice: Disabling VDS (Could not create VDS Loader Instance: %s)", VdsErrorString(hr));
+		goto out;
+	}
+
+	hr = IVdsServiceLoader_LoadService(pLoader, L"", &pService);
+	if (hr != S_OK) {
+		suprintf("Notice: Disabling VDS (Could not load VDS Service: %s)", VdsErrorString(hr));
+		goto out;
+	}
+
+out:
+	if (pService != NULL)
+		IVdsService_Release(pService);
+	if (pLoader != NULL)
+		IVdsServiceLoader_Release(pLoader);
+	VDS_SET_ERROR(hr);
+	return (hr == S_OK);
 }
 
 /*
@@ -2231,7 +2271,6 @@ BOOL CreatePartition(HANDLE hDrive, int partition_style, int file_system, BOOL m
 				uprintf("Write error: %s", WindowsErrorString());
 				return FALSE;
 			}
-			installed_uefi_ntfs = TRUE;
 		}
 		pn++;
 	}

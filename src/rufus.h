@@ -69,12 +69,14 @@
 #define MAX_SIZE_SUFFIXES           6			// bytes, KB, MB, GB, TB, PB
 #define MAX_CLUSTER_SIZES           18
 #define MAX_PROGRESS                0xFFFF
+#define PATCH_PROGRESS_TOTAL        207
 #define MAX_LOG_SIZE                0x7FFFFFFE
 #define MAX_REFRESH                 25			// How long we should wait to refresh UI elements (in ms)
 #define MAX_GUID_STRING_LENGTH      40
 #define MAX_PARTITIONS              16			// Maximum number of partitions we handle
 #define MAX_ESP_TOGGLE              8			// Maximum number of entries we record to toggle GPT ESP back and forth
 #define MAX_ISO_TO_ESP_SIZE         512			// Maximum size we allow for the ISO → ESP option (in MB)
+#define MAX_DEFAULT_LIST_CARD_SIZE  200			// Size above which we don't list a card without enable HDD or Alt-F (in GB)
 #define MAX_SECTORS_TO_CLEAR        128			// nb sectors to zap when clearing the MBR/GPT (must be >34)
 #define MAX_WININST                 4			// Max number of install[.wim|.esd] we can handle on an image
 #define MBR_UEFI_MARKER             0x49464555	// 'U', 'E', 'F', 'I', as a 32 bit little endian longword
@@ -161,6 +163,7 @@
 #define static_sprintf(dst, ...) safe_sprintf(dst, sizeof(dst), __VA_ARGS__)
 #define safe_strlen(str) ((((char*)str)==NULL)?0:strlen(str))
 #define safe_strdup _strdup
+#define to_windows_path(str) do { size_t __i; for (__i = 0; __i < safe_strlen(str); __i++) if (str[__i] == '/') str[__i] = '\\'; } while(0)
 #if defined(_MSC_VER)
 #define safe_vsnprintf(buf, size, format, arg) _vsnprintf_s(buf, size, _TRUNCATE, format, arg)
 #else
@@ -250,6 +253,7 @@ enum action_type {
 	OP_CREATE_FS,
 	OP_FIX_MBR,
 	OP_FILE_COPY,
+	OP_PATCH,
 	OP_FINALIZE,
 	OP_MAX
 };
@@ -290,6 +294,13 @@ enum target_type {
 };
 // For the partition types we'll use Microsoft's PARTITION_STYLE_### constants
 #define PARTITION_STYLE_SFD PARTITION_STYLE_RAW
+
+enum image_option_type {
+	IMOP_WIN_STANDARD = 0,
+	IMOP_WIN_EXTENDED,
+	IMOP_WIN_TO_GO,
+	IMOP_MAX
+};
 
 enum checksum_type {
 	CHECKSUM_MD5 = 0,
@@ -333,6 +344,13 @@ enum checksum_type {
 #define SYMLINKS_UDF        0x02
 
 typedef struct {
+	uint16_t major;
+	uint16_t minor;
+	uint16_t build;
+	uint16_t revision;
+} winver_t;
+
+typedef struct {
 	char label[192];					// 3*64 to account for UTF-8
 	char usb_label[192];				// converted USB label for workaround
 	char cfg_path[128];					// path to the ISO's isolinux.cfg
@@ -349,6 +367,7 @@ typedef struct {
 	BOOLEAN is_vhd;
 	BOOLEAN is_windows_img;
 	BOOLEAN disable_iso;
+	BOOLEAN rh8_derivative;
 	uint16_t winpe;
 	uint16_t has_efi;
 	uint8_t has_md5sum;
@@ -366,10 +385,12 @@ typedef struct {
 	BOOLEAN needs_syslinux_overwrite;
 	BOOLEAN has_grub4dos;
 	BOOLEAN has_grub2;
+	BOOLEAN has_compatresources_dll;
 	BOOLEAN has_kolibrios;
 	BOOLEAN uses_casper;
 	BOOLEAN uses_minint;
 	BOOLEAN compression_type;
+	winver_t win_version;	// Windows ISO version
 	uint16_t sl_version;	// Syslinux/Isolinux version
 	char sl_version_str[12];
 	char sl_version_ext[32];
@@ -439,12 +460,13 @@ enum WindowsVersion {
 	WINDOWS_UNSUPPORTED = 0,
 	WINDOWS_XP = 0x51,
 	WINDOWS_2003 = 0x52,	// Also XP_64
-	WINDOWS_VISTA = 0x60,	// Also 2008
-	WINDOWS_7 = 0x61,		// Also 2008_R2
-	WINDOWS_8 = 0x62,		// Also 2012
-	WINDOWS_8_1 = 0x63,		// Also 2012_R2
+	WINDOWS_VISTA = 0x60,	// Also Server 2008
+	WINDOWS_7 = 0x61,		// Also Server 2008_R2
+	WINDOWS_8 = 0x62,		// Also Server 2012
+	WINDOWS_8_1 = 0x63,		// Also Server 2012_R2
 	WINDOWS_10_PREVIEW1 = 0x64,
-	WINDOWS_10 = 0xA0,
+	WINDOWS_10 = 0xA0,		// Also Server 2016, also Server 2019
+	WINDOWS_11 = 0xB0,		// Also Server 2022
 	WINDOWS_MAX
 };
 
@@ -477,7 +499,7 @@ extern uint64_t persistence_size;
 extern size_t ubuffer_pos;
 extern const int nb_steps[FS_MAX];
 extern float fScale;
-extern int nWindowsVersion, nWindowsBuildNumber, dialog_showing, force_update;
+extern int nWindowsVersion, nWindowsBuildNumber, nWindowsEdition, dialog_showing, force_update;
 extern int fs_type, boot_type, partition_type, target_type;
 extern unsigned long syslinux_ldlinux_len[2];
 extern char WindowsVersionStr[128], ubuffer[UBUFFER_SIZE], embedded_sl_version_str[2][12];
@@ -498,7 +520,9 @@ extern void PrintStatusInfo(BOOL info, BOOL debug, unsigned int duration, int ms
 #define PrintInfo(...) PrintStatusInfo(TRUE, FALSE, __VA_ARGS__)
 #define PrintInfoDebug(...) PrintStatusInfo(TRUE, TRUE, __VA_ARGS__)
 extern void UpdateProgress(int op, float percent);
-extern void UpdateProgressWithInfo(int op, int msg, uint64_t processed, uint64_t total);
+extern void _UpdateProgressWithInfo(int op, int msg, uint64_t processed, uint64_t total, BOOL force);
+#define UpdateProgressWithInfo(op, msg, processed, total) _UpdateProgressWithInfo(op, msg, processed, total, FALSE)
+#define UpdateProgressWithInfoForce(op, msg, processed, total) _UpdateProgressWithInfo(op, msg, processed, total, TRUE)
 #define UpdateProgressWithInfoInit(hProgressDialog, bNoAltMode) UpdateProgressWithInfo(OP_INIT, (int)bNoAltMode, (uint64_t)(uintptr_t)hProgressDialog, 0);
 extern const char* StrError(DWORD error_code, BOOL use_default_locale);
 extern char* GuidToString(const GUID* guid);
@@ -541,6 +565,8 @@ extern unsigned char* GetResource(HMODULE module, char* name, char* type, const 
 extern DWORD GetResourceSize(HMODULE module, char* name, char* type, const char* desc);
 extern DWORD RunCommand(const char* cmdline, const char* dir, BOOL log);
 extern BOOL CompareGUID(const GUID *guid1, const GUID *guid2);
+extern BOOL MountRegistryHive(const HKEY key, const char* pszHiveName, const char* pszHivePath);
+extern BOOL UnmountRegistryHive(const HKEY key, const char* pszHiveName);
 extern BOOL SetLGP(BOOL bRestore, BOOL* bExistingKey, const char* szPath, const char* szPolicy, DWORD dwValue);
 extern LONG GetEntryWidth(HWND hDropDown, const char* entry);
 extern uint64_t DownloadToFileOrBuffer(const char* url, const char* file, BYTE** buffer, HWND hProgressDialog, BOOL bTaskBarProgress);
@@ -570,6 +596,8 @@ extern BOOL WimExtractFile(const char* wim_image, int index, const char* src, co
 extern BOOL WimExtractFile_API(const char* image, int index, const char* src, const char* dst, BOOL bSilent);
 extern BOOL WimExtractFile_7z(const char* image, int index, const char* src, const char* dst, BOOL bSilent);
 extern BOOL WimApplyImage(const char* image, int index, const char* dst);
+extern char* WimMountImage(const char* image, int index);
+extern BOOL WimUnmountImage(const char* image, int index);
 extern uint8_t IsBootableImage(const char* path);
 extern BOOL AppendVHDFooter(const char* vhd_path);
 extern int SetWinToGoIndex(void);
@@ -583,7 +611,7 @@ extern BOOL WriteFileWithRetry(HANDLE hFile, LPCVOID lpBuffer, DWORD nNumberOfBy
 	LPDWORD lpNumberOfBytesWritten, DWORD nNumRetries);
 extern BOOL SetThreadAffinity(DWORD_PTR* thread_affinity, size_t num_threads);
 extern BOOL HashFile(const unsigned type, const char* path, uint8_t* sum);
-extern BOOL HashBuffer(const unsigned type, const unsigned char* buf, const size_t len, uint8_t* sum);
+extern BOOL HashBuffer(const unsigned type, const uint8_t* buf, const size_t len, uint8_t* sum);
 extern BOOL IsFileInDB(const char* path);
 extern BOOL IsBufferInDB(const unsigned char* buf, const size_t len);
 #define printbits(x) _printbits(sizeof(x), &x, 0)
@@ -649,22 +677,41 @@ extern void StrArrayDestroy(StrArray* arr);
  *   pfFormatEx = (FormatEx_t) GetProcAddress(GetDLLHandle("fmifs"), "FormatEx");
  * to make it accessible.
  */
-#define         MAX_LIBRARY_HANDLES 32
+#define         MAX_LIBRARY_HANDLES 64
 extern HMODULE  OpenedLibrariesHandle[MAX_LIBRARY_HANDLES];
 extern uint16_t OpenedLibrariesHandleSize;
 #define         OPENED_LIBRARIES_VARS HMODULE OpenedLibrariesHandle[MAX_LIBRARY_HANDLES]; uint16_t OpenedLibrariesHandleSize = 0
 #define         CLOSE_OPENED_LIBRARIES while(OpenedLibrariesHandleSize > 0) FreeLibrary(OpenedLibrariesHandle[--OpenedLibrariesHandleSize])
 static __inline HMODULE GetLibraryHandle(char* szLibraryName) {
 	HMODULE h = NULL;
-	if ((h = GetModuleHandleA(szLibraryName)) == NULL) {
-		if (OpenedLibrariesHandleSize >= MAX_LIBRARY_HANDLES) {
-			uprintf("Error: MAX_LIBRARY_HANDLES is too small\n");
-		} else {
-			h = LoadLibraryExA(szLibraryName, NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
-			if (h != NULL)
-				OpenedLibrariesHandle[OpenedLibrariesHandleSize++] = h;
-		}
+	wchar_t* wszLibraryName = NULL;
+	int size;
+	if (szLibraryName == NULL || szLibraryName[0] == 0)
+		goto out;
+	size = MultiByteToWideChar(CP_UTF8, 0, szLibraryName, -1, NULL, 0);
+	if ((size <= 1) || ((wszLibraryName = (wchar_t*)calloc(size, sizeof(wchar_t))) == NULL) ||
+		(MultiByteToWideChar(CP_UTF8, 0, szLibraryName, -1, wszLibraryName, size) != size))
+		goto out;
+	// If the library is already opened, just return a handle (that doesn't need to be freed)
+	if ((h = GetModuleHandleW(wszLibraryName)) != NULL)
+		goto out;
+	// Sanity check
+	if (OpenedLibrariesHandleSize >= MAX_LIBRARY_HANDLES) {
+		uprintf("Error: MAX_LIBRARY_HANDLES is too small\n");
+		goto out;
 	}
+	h = LoadLibraryExW(wszLibraryName, NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
+	// Some Windows 7 platforms (most likely the ones missing KB2533623 per the
+	// official LoadLibraryEx doc) can return ERROR_INVALID_PARAMETER when using
+	// the Ex() version. If that's the case, fallback to using LoadLibraryW().
+	if ((h == NULL) && (SCODE_CODE(GetLastError()) == ERROR_INVALID_PARAMETER))
+		h = LoadLibraryW(wszLibraryName);
+	if (h != NULL)
+		OpenedLibrariesHandle[OpenedLibrariesHandleSize++] = h;
+	else
+		uprintf("Unable to load '%S.dll': %s", wszLibraryName, WindowsErrorString());
+out:
+	free(wszLibraryName);
 	return h;
 }
 #define PF_TYPE(api, ret, proc, args)		typedef ret (api *proc##_t)args
@@ -673,7 +720,7 @@ static __inline HMODULE GetLibraryHandle(char* szLibraryName) {
 #define PF_INIT(proc, name)					if (pf##proc == NULL) pf##proc = \
 	(proc##_t) GetProcAddress(GetLibraryHandle(#name), #proc)
 #define PF_INIT_OR_OUT(proc, name)			do {PF_INIT(proc, name);         \
-	if (pf##proc == NULL) {uprintf("Unable to locate %s() in %s.dll: %s\n",  \
+	if (pf##proc == NULL) {uprintf("Unable to locate %s() in '%s.dll': %s",  \
 	#proc, #name, WindowsErrorString()); goto out;} } while(0)
 #define PF_INIT_OR_SET_STATUS(proc, name)	do {PF_INIT(proc, name);         \
 	if ((pf##proc == NULL) && (NT_SUCCESS(status))) status = STATUS_NOT_IMPLEMENTED; } while(0)

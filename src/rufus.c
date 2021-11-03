@@ -52,9 +52,6 @@
 #include "../res/grub/grub_version.h"
 #include "../res/grub2/grub2_version.h"
 
-#define rufus    0
-#define appstore 1
-
 enum bootcheck_return {
 	BOOTCHECK_PROCEED = 0,
 	BOOTCHECK_CANCEL = -1,
@@ -75,6 +72,7 @@ static BOOL user_notified = FALSE;
 static BOOL relaunch = FALSE;
 static BOOL dont_display_image_name = FALSE;
 static BOOL user_changed_label = FALSE;
+static BOOL user_deleted_rufus_dir = FALSE;
 static BOOL app_changed_label = FALSE;
 static BOOL allowed_filesystem[FS_MAX] = { 0 };
 static int64_t last_iso_blocking_status;
@@ -88,7 +86,7 @@ static char szTimer[12] = "00:00:00";
 static unsigned int timer;
 static char uppercase_select[2][64], uppercase_start[64], uppercase_close[64], uppercase_cancel[64];
 
-extern HANDLE update_check_thread, apply_wim_thread;
+extern HANDLE update_check_thread, wim_thread;
 extern BOOL enable_iso, enable_joliet, enable_rockridge, enable_extra_hashes;
 extern BYTE* fido_script;
 extern HWND hFidoDlg;
@@ -122,10 +120,10 @@ BOOL enable_HDDs = FALSE, enable_VHDs = TRUE, enable_ntfs_compression = FALSE, n
 BOOL advanced_mode_device, advanced_mode_format, allow_dual_uefi_bios, detect_fakes, enable_vmdk, force_large_fat32, usb_debug;
 BOOL use_fake_units, preserve_timestamps = FALSE, fast_zeroing = FALSE, app_changed_size = FALSE;
 BOOL zero_drive = FALSE, list_non_usb_removable_drives = FALSE, enable_file_indexing, large_drive = FALSE;
-BOOL write_as_image = FALSE, write_as_esp = FALSE, installed_uefi_ntfs = FALSE, use_vds = FALSE, ignore_boot_marker = FALSE;
-BOOL windows_to_go_selected = FALSE, appstore_version = FALSE;
+BOOL write_as_image = FALSE, write_as_esp = FALSE, use_vds = FALSE, ignore_boot_marker = FALSE;
+BOOL appstore_version = FALSE, is_vds_available = TRUE;
 float fScale = 1.0f;
-int dialog_showing = 0, selection_default = BT_IMAGE, persistence_unit_selection = -1;
+int dialog_showing = 0, selection_default = BT_IMAGE, persistence_unit_selection = -1, imop_win_sel = 0;
 int default_fs, fs_type, boot_type, partition_type, target_type; // file system, boot type, partition type, target type
 int force_update = 0, default_thread_priority = THREAD_PRIORITY_ABOVE_NORMAL;
 char szFolderPath[MAX_PATH], app_dir[MAX_PATH], system_dir[MAX_PATH], temp_dir[MAX_PATH], sysnative_dir[MAX_PATH];
@@ -138,7 +136,6 @@ char *archive_path = NULL, image_option_txt[128], *fido_url = NULL;
 StrArray DriveId, DriveName, DriveLabel, DriveHub, BlockingProcess, ImageList;
 // Number of steps for each FS for FCC_STRUCTURE_PROGRESS
 const int nb_steps[FS_MAX] = { 5, 5, 12, 1, 10, 1, 1, 1, 1 };
-const char* appstore_chunk[2] = { "\\WindowsApps\\19453.net.Rufus", "y8nh7bq2a8dtt\\rufus" };
 const char* flash_type[BADLOCKS_PATTERN_TYPES] = { "SLC", "MLC", "TLC" };
 
 // TODO: Remember to update copyright year in stdlg's AboutCallback() WM_INITDIALOG,
@@ -182,7 +179,7 @@ static void SetAllowedFileSystems(void)
 		if ((image_path != NULL) && (img_report.has_4GB_file))
 			break;
 		if (!HAS_WINDOWS(img_report) || (target_type != TT_BIOS) || allow_dual_uefi_bios) {
-			if (!HAS_WINTOGO(img_report) || (!ComboBox_GetCurItemData(hImageOption))) {
+			if (!HAS_WINTOGO(img_report) || (ComboBox_GetCurItemData(hImageOption) != IMOP_WIN_TO_GO)) {
 				allowed_filesystem[FS_FAT16] = TRUE;
 				allowed_filesystem[FS_FAT32] = TRUE;
 			}
@@ -261,7 +258,7 @@ static void SetPartitionSchemeAndTargetSystem(BOOL only_target)
 
 	boot_type = (int)ComboBox_GetCurItemData(hBootType);
 	is_windows_to_go_selected = (boot_type == BT_IMAGE) && (image_path != NULL) && HAS_WINTOGO(img_report) &&
-		ComboBox_GetCurItemData(hImageOption);
+		(ComboBox_GetCurItemData(hImageOption) == IMOP_WIN_TO_GO);
 	// If no device is selected, don't populate anything
 	if (ComboBox_GetCurSel(hDeviceList) < 0)
 		return;
@@ -397,6 +394,41 @@ static BOOL SetClusterSizes(int FSType)
 	return TRUE;
 }
 
+static BOOL IsRefsAvailable(MEDIA_TYPE MediaType)
+{
+	// The creation of ReFS drives was added in Windows 8.1... but then removed by
+	// Microsoft in Windows 10 1709, except for the Enterprise and Pro Workstation
+	// versions. Oh and VdsService::QueryFileSystemTypes() is *USELESS* to detect
+	// if ReFS is available on the system. Oh, and it only applies to fixed media.
+
+	if (MediaType != FixedMedia)
+		return FALSE;
+	if (nWindowsVersion < WINDOWS_8_1 || nWindowsBuildNumber <= 0)
+		return FALSE;
+	if (nWindowsBuildNumber < 16000)
+		return TRUE;
+	switch (nWindowsEdition) {
+	case 0x0000000A: // Enterprise Server
+	case 0x0000001B: // Enterprise N
+	case 0x00000046: // Enterprise E
+	case 0x00000048: // Enterprise Eval
+	case 0x00000054: // Enterprise N Eval
+	case 0x0000007D: // Enterprise S
+	case 0x0000007E: // Enterprise S N
+	case 0x00000081: // Enterprise S Eval
+	case 0x00000082: // Enterprise S N Eval
+	case 0x0000008C: // Enterprise Subscription
+	case 0x0000008D: // Enterprise Subscription N
+	case 0x000000A1: // Pro Workstation
+	case 0x000000A2: // Pro Workstation N
+	case 0x000000AB: // Enterprise G
+	case 0x000000AC: // Enterprise G N
+		return TRUE;
+	default:
+		return FALSE;
+	}
+}
+
 // Populate the File System and Cluster Size dropdowns
 static BOOL SetFileSystemAndClusterSize(char* fs_name)
 {
@@ -516,12 +548,14 @@ static BOOL SetFileSystemAndClusterSize(char* fs_name)
 			SelectedDrive.ClusterSize[FS_EXT3].Default = 1;
 		}
 
-		// ReFS (only supported for Windows 8.1 and later and for fixed disks)
-		// TODO: Check later versions of Windows 10 for disabled ReFS (IVdsService::QueryFileSystemTypes?)
-		if (SelectedDrive.DiskSize >= 512*MB) {
-			if ((nWindowsVersion >= WINDOWS_8_1) && (SelectedDrive.MediaType == FixedMedia)) {
-				SelectedDrive.ClusterSize[FS_REFS].Allowed = SINGLE_CLUSTERSIZE_DEFAULT;
-				SelectedDrive.ClusterSize[FS_REFS].Default = 1;
+		// ReFS (only applicable for a select number of Windows platforms and editions)
+		if ((SelectedDrive.DiskSize >= 512 * MB) && (IsRefsAvailable(SelectedDrive.MediaType))) {
+			if (SelectedDrive.DiskSize < 16 * TB) {	// < 16 TB
+				SelectedDrive.ClusterSize[FS_REFS].Allowed = 64 * KB + 4 * KB;
+				SelectedDrive.ClusterSize[FS_REFS].Default = 4 * KB;
+			} else {
+				SelectedDrive.ClusterSize[FS_REFS].Allowed = 64 * KB;
+				SelectedDrive.ClusterSize[FS_REFS].Default = 64 * KB;
 			}
 		}
 	}
@@ -592,7 +626,7 @@ static void SetFSFromISO(void)
 	int i, fs_tmp, preferred_fs = FS_UNKNOWN;
 	uint32_t fs_mask = FS_FAT32 | FS_NTFS;
 	BOOL windows_to_go = (image_options & IMOP_WINTOGO) && (boot_type == BT_IMAGE) &&
-		HAS_WINTOGO(img_report) && ComboBox_GetCurItemData(hImageOption);
+		HAS_WINTOGO(img_report) && (ComboBox_GetCurItemData(hImageOption) == IMOP_WIN_TO_GO);
 
 	if (image_path == NULL)
 		return;
@@ -652,7 +686,7 @@ static void SetMBRProps(void)
 	fs_type = (int)ComboBox_GetCurItemData(hFileSystem);
 
 	if ((!mbr_selected_by_user) && ((image_path == NULL) || (boot_type != BT_IMAGE) || (fs_type != FS_NTFS) || HAS_GRUB(img_report) ||
-		((image_options & IMOP_WINTOGO) && ComboBox_GetCurItemData(hImageOption)) )) {
+		((image_options & IMOP_WINTOGO) && (ComboBox_GetCurItemData(hImageOption) == IMOP_WIN_TO_GO)) )) {
 		CheckDlgButton(hMainDialog, IDC_RUFUS_MBR, BST_UNCHECKED);
 		IGNORE_RETVAL(ComboBox_SetCurSel(hDiskID, 0));
 		return;
@@ -1058,6 +1092,15 @@ static void DisplayISOProps(void)
 	int i;
 
 	uprintf("ISO label: '%s'", img_report.label);
+	if (img_report.win_version.major != 0) {
+		if (img_report.win_version.minor == 0)
+			uprintf("  Detected: Windows %d ISO (Build %d.%d)", img_report.win_version.major,
+				img_report.win_version.build, img_report.win_version.revision);
+		else
+			uprintf("  Detected: Windows %d.%d ISO (Build %d.%d)", img_report.win_version.major,
+				img_report.win_version.minor, img_report.win_version.build, img_report.win_version.revision);
+	}
+
 	uprintf("  Size: %s (Projected)", SizeToHumanReadable(img_report.projected_size, FALSE, FALSE));
 	if (img_report.mismatch_size > 0) {
 		uprintf("  ERROR: Detected that file on disk has been truncated by %s!",
@@ -1123,10 +1166,17 @@ static void UpdateImage(BOOL update_image_option_only)
 	}
 
 	ComboBox_ResetContent(hImageOption);
-	if (!img_report.is_windows_img)
-		IGNORE_RETVAL(ComboBox_SetItemData(hImageOption, ComboBox_AddStringU(hImageOption, lmprintf(MSG_117)), FALSE));
-	IGNORE_RETVAL(ComboBox_SetItemData(hImageOption, ComboBox_AddStringU(hImageOption, lmprintf(MSG_118)), TRUE));
-	IGNORE_RETVAL(ComboBox_SetCurSel(hImageOption, (img_report.is_windows_img || !windows_to_go_selected) ? 0 : 1));
+
+	if (!img_report.is_windows_img) {	// Straight install.wim/install.esd only have Windows To Go option
+		if (img_report.win_version.major == 11) {
+			IGNORE_RETVAL(ComboBox_SetItemData(hImageOption, ComboBox_AddStringU(hImageOption, lmprintf(MSG_322)), IMOP_WIN_STANDARD));
+			IGNORE_RETVAL(ComboBox_SetItemData(hImageOption, ComboBox_AddStringU(hImageOption, lmprintf(MSG_323)), IMOP_WIN_EXTENDED));
+		} else {
+			IGNORE_RETVAL(ComboBox_SetItemData(hImageOption, ComboBox_AddStringU(hImageOption, lmprintf(MSG_117)), IMOP_WIN_STANDARD));
+		}
+	}
+	IGNORE_RETVAL(ComboBox_SetItemData(hImageOption, ComboBox_AddStringU(hImageOption, lmprintf(MSG_118)), IMOP_WIN_TO_GO));
+	IGNORE_RETVAL(ComboBox_SetCurSel(hImageOption, imop_win_sel));
 }
 
 static uint8_t FindArch(const char* filename)
@@ -1207,16 +1257,16 @@ out:
 // The scanning process can be blocking for message processing => use a thread
 DWORD WINAPI ImageScanThread(LPVOID param)
 {
-	// Regexp patterns used to match ISO labels for distros whose
-	// maintainers have drunk the "ISOHybrid = DD only" kool aid...
-	const char* dd_koolaid_drinkers[] = {
-		"^CentOS-8-[3-9].*",	// CentOS 8.3 or later
-		"^CentOS-9-.*",			// CentOS 9.x
-		"^OL-.*-BaseOS-.*",		// Oracle Linux
-		"^RHEL-8.[2-9].*",		// Red Hat 8.2 or later
-		"^RHEL-9.*",			// Red Hat 9.x
-		// Don't bother with Fedora for now, even as they use
-		// the same problematic Anaconda...
+	// Regexp patterns used to match ISO labels for the Red Hat 8 derivatives
+	// where we should apply an inst.stage2 ➔ inst.repo workaround for ISO
+	// mode (per: https://github.com/rhinstaller/anaconda/pull/3529).
+	const char* redhat8_derivative[] = {
+		"^AlmaLinux-8.*",		// AlmaLinux 8.x
+		"^Fedora.*-3[3-9].*",	// Fedora 33-39
+		"^CentOS-8.*",			// CentOS 8.x
+		"^OL-8.*",				// Oracle Linux 8.x
+		"^RHEL-8.*",			// Red Hat 8.x
+		"^Rocky-8.*",			// Rocky Linux 8.x
 	};
 	int i, len;
 	uint8_t arch;
@@ -1231,6 +1281,7 @@ DWORD WINAPI ImageScanThread(LPVOID param)
 	img_report.is_iso = (BOOLEAN)ExtractISO(image_path, "", TRUE);
 	img_report.is_bootable_img = IsBootableImage(image_path);
 	ComboBox_ResetContent(hImageOption);
+	imop_win_sel = 0;
 
 	if ((FormatStatus == (ERROR_SEVERITY_ERROR | FAC(FACILITY_STORAGE) | ERROR_CANCELLED)) ||
 		(img_report.image_size == 0) ||
@@ -1279,9 +1330,9 @@ DWORD WINAPI ImageScanThread(LPVOID param)
 	if (img_report.is_iso) {
 		DisplayISOProps();
 
-		for (i = 0; i < ARRAYSIZE(dd_koolaid_drinkers); i++) {
-			if (re_match(dd_koolaid_drinkers[i], img_report.label, &len) >= 0) {
-				img_report.disable_iso = TRUE;
+		for (i = 0; i < ARRAYSIZE(redhat8_derivative); i++) {
+			if (re_match(redhat8_derivative[i], img_report.label, &len) >= 0) {
+				img_report.rh8_derivative = TRUE;
 				break;
 			}
 		}
@@ -1421,7 +1472,7 @@ static DWORD WINAPI BootCheckThread(LPVOID param)
 				goto out;
 		}
 
-		if ((image_options & IMOP_WINTOGO) && ComboBox_GetCurItemData(hImageOption)) {
+		if ((image_options & IMOP_WINTOGO) && (ComboBox_GetCurItemData(hImageOption) == IMOP_WIN_TO_GO)) {
 			if (fs_type != FS_NTFS) {
 				// Windows To Go only works for NTFS
 				MessageBoxExU(hMainDialog, lmprintf(MSG_097, "Windows To Go"), lmprintf(MSG_092), MB_OK|MB_ICONERROR|MB_IS_RTL, selected_langid);
@@ -1503,8 +1554,9 @@ static DWORD WINAPI BootCheckThread(LPVOID param)
 			fd = fopen(tmp, "rb");
 			if (fd != NULL) {
 				// If a file already exists in the current directory, use that one
-				uprintf("Will reuse '%s' from './" FILES_DIR "/%s-%s/' for Grub 2.x installation",
-					core_img, grub, img_report.grub2_version);
+				to_windows_path(tmp);
+				uprintf("Will reuse '%s' from '%s\\%s\\%s-%s\\' for Grub 2.x installation",
+					core_img, app_data_dir, FILES_DIR, grub, img_report.grub2_version);
 				fseek(fd, 0, SEEK_END);
 				grub2_len = ftell(fd);
 				fseek(fd, 0, SEEK_SET);
@@ -1576,7 +1628,8 @@ static DWORD WINAPI BootCheckThread(LPVOID param)
 						fd = fopen(tmp, "rb");
 						if (fd != NULL) {
 							// If a file already exists in the current directory, use that one
-							uprintf("Will replace obsolete '%s' from ISO with the one found in './" FILES_DIR "/%s'", old_c32_name[i], tmp);
+							uprintf("Will replace obsolete '%s' from ISO with the one found in '%s\\%s\\%s'",
+								old_c32_name[i], app_data_dir, FILES_DIR, tmp);
 							fclose(fd);
 							use_own_c32[i] = TRUE;
 						} else {
@@ -1605,7 +1658,7 @@ static DWORD WINAPI BootCheckThread(LPVOID param)
 				IGNORE_RETVAL(_chdir(FILES_DIR));
 				for (i=0; i<2; i++) {
 					// Check if we already have the relevant ldlinux_v#.##.sys & ldlinux_v#.##.bss files
-					static_sprintf(tmp, "%s-%s%s/%s.%s", syslinux, img_report.sl_version_str,
+					static_sprintf(tmp, "%s-%s%s\\%s.%s", syslinux, img_report.sl_version_str,
 						img_report.sl_version_ext, ldlinux, ldlinux_ext[i]);
 					fd = fopen(tmp, "rb");
 					if (fd != NULL) {
@@ -1615,8 +1668,9 @@ static DWORD WINAPI BootCheckThread(LPVOID param)
 					}
 				}
 				if ((syslinux_ldlinux_len[0] != 0) && (syslinux_ldlinux_len[1] != 0)) {
-					uprintf("Will reuse '%s.%s' and '%s.%s' from './" FILES_DIR "/%s/%s-%s%s/' for Syslinux installation",
-						ldlinux, ldlinux_ext[0], ldlinux, ldlinux_ext[1], FILES_DIR, syslinux,
+					to_windows_path(img_report.sl_version_ext);
+					uprintf("Will reuse '%s.%s' and '%s.%s' from '%s\\%s\\%s-%s%s\\' for Syslinux installation",
+						ldlinux, ldlinux_ext[0], ldlinux, ldlinux_ext[1], app_data_dir, FILES_DIR, syslinux,
 						img_report.sl_version_str, img_report.sl_version_ext);
 				} else {
 					r = MessageBoxExU(hMainDialog, lmprintf(MSG_114, img_report.sl_version_str, img_report.sl_version_ext,
@@ -1672,7 +1726,8 @@ static DWORD WINAPI BootCheckThread(LPVOID param)
 		static_sprintf(tmp, "%s-%s/%s.%s", syslinux, embedded_sl_version_str[1], ldlinux, ldlinux_ext[2]);
 		fd = fopenU(tmp, "rb");
 		if (fd != NULL) {
-			uprintf("Will reuse './%s/%s' for Syslinux installation", FILES_DIR, tmp);
+			to_windows_path(tmp);
+			uprintf("Will reuse '%s\\%s\\%s' for Syslinux installation", app_data_dir, FILES_DIR, tmp);
 			fclose(fd);
 		} else {
 			static_sprintf(tmp, "%s.%s", ldlinux, ldlinux_ext[2]);
@@ -1705,7 +1760,8 @@ static DWORD WINAPI BootCheckThread(LPVOID param)
 		static_sprintf(tmp, "grub4dos-%s/grldr", GRUB4DOS_VERSION);
 		fd = fopenU(tmp, "rb");
 		if (fd != NULL) {
-			uprintf("Will reuse './%s/%s' for Grub4DOS installation", FILES_DIR, tmp);
+			to_windows_path(tmp);
+			uprintf("Will reuse '%s\\%s\\%s' for Grub4DOS installation", app_data_dir, FILES_DIR, tmp);
 			fclose(fd);
 		} else {
 			static_sprintf(tmp, "grldr");
@@ -1860,6 +1916,8 @@ static void InitDialog(HWND hDlg)
 			"one. Because of this, some messages will only be displayed in English.", selected_locale->txt[1]);
 		uprintf("If you think you can help update this translation, please e-mail the author of this application");
 	}
+	if (!is_vds_available)
+		uprintf("Notice: Windows VDS is unavailable");
 
 	CreateTaskbarList();
 	SetTaskbarProgressState(TASKBAR_NORMAL);
@@ -2129,6 +2187,24 @@ out:
 	return ret;
 }
 
+#ifdef RUFUS_TEST
+extern BOOL RemoveWindows11Restrictions(char drive_letter);
+
+static DWORD WINAPI TestThread(LPVOID param)
+{
+	static BOOL processing = FALSE;
+
+	if (processing) {
+		uprintf("Test thread is already in progress!");
+		ExitThread(1);
+	}
+	processing = TRUE;
+	RemoveWindows11Restrictions('B');
+	processing = FALSE;
+	ExitThread(0);
+}
+#endif
+
 /*
  * Main dialog callback
  */
@@ -2165,8 +2241,7 @@ static INT_PTR CALLBACK MainCallback(HWND hDlg, UINT message, WPARAM wParam, LPA
 	case WM_COMMAND:
 #ifdef RUFUS_TEST
 		if (LOWORD(wParam) == IDC_TEST) {
-			DWORD DriveIndex = (DWORD)ComboBox_GetItemData(hDeviceList, ComboBox_GetCurSel(hDeviceList));
-			uprintf("label = '%s'", GetExtFsLabel(DriveIndex, 1));
+			CreateThread(NULL, 0, TestThread, NULL, 0, NULL);
 			break;
 		}
 #endif
@@ -2221,11 +2296,13 @@ static INT_PTR CALLBACK MainCallback(HWND hDlg, UINT message, WPARAM wParam, LPA
 
 			// Save the current log to %LocalAppData%\Rufus\rufus.log
 			log_size = GetWindowTextLengthU(hLog);
-			if ((log_size > 0) && ((log_buffer = (char*)malloc(log_size)) != NULL)) {
+			if ((!user_deleted_rufus_dir) && (log_size > 0) && ((log_buffer = (char*)malloc(log_size)) != NULL)) {
 				log_size = GetDlgItemTextU(hLogDialog, IDC_LOG_EDIT, log_buffer, log_size);
 				if (log_size-- > 1) {
-					static_sprintf(tmp, "%s\\%s\\rufus.log", app_data_dir, FILES_DIR);
-					FileIO(TRUE, tmp, &log_buffer, &log_size);
+					IGNORE_RETVAL(_chdirU(app_data_dir));
+					IGNORE_RETVAL(_mkdir(FILES_DIR));
+					IGNORE_RETVAL(_chdir(FILES_DIR));
+					FileIO(TRUE, "rufus.log", &log_buffer, &log_size);
 				}
 				safe_free(log_buffer);
 			}
@@ -2341,7 +2418,7 @@ static INT_PTR CALLBACK MainCallback(HWND hDlg, UINT message, WPARAM wParam, LPA
 			if (HIWORD(wParam) != CBN_SELCHANGE)
 				break;
 			SetFileSystemAndClusterSize(NULL);
-			windows_to_go_selected = (BOOL)ComboBox_GetCurItemData(hImageOption);
+			imop_win_sel = ComboBox_GetCurSel(hImageOption);
 			break;
 		case IDC_PERSISTENCE_SIZE:
 			if (HIWORD(wParam) == EN_CHANGE) {
@@ -2529,7 +2606,6 @@ static INT_PTR CALLBACK MainCallback(HWND hDlg, UINT message, WPARAM wParam, LPA
 			fs_type = (int)ComboBox_GetCurItemData(hFileSystem);
 			write_as_image = FALSE;
 			write_as_esp = FALSE;
-			installed_uefi_ntfs = FALSE;
 			// Disable all controls except Cancel
 			EnableControls(FALSE, FALSE);
 			FormatStatus = 0;
@@ -2690,6 +2766,7 @@ static INT_PTR CALLBACK MainCallback(HWND hDlg, UINT message, WPARAM wParam, LPA
 		InitDialog(hDlg);
 		GetDevices(0);
 		EnableControls(TRUE, FALSE);
+		UpdateImage(FALSE);
 		// The AppStore version does not need the internal check for updates
 		if (!appstore_version)
 			CheckForUpdates(FALSE);
@@ -2989,12 +3066,6 @@ static INT_PTR CALLBACK MainCallback(HWND hDlg, UINT message, WPARAM wParam, LPA
 			PrintInfo(0, MSG_210);
 			MessageBeep(MB_OK);
 			FlashTaskbar(dialog_handle);
-			if (installed_uefi_ntfs && (!ReadSettingBool(SETTING_DISABLE_SECURE_BOOT_NOTICE))) {
-				notification_info more_info;
-				more_info.id = MORE_INFO_URL;
-				more_info.url = SECURE_BOOT_MORE_INFO_URL;
-				Notification(MSG_INFO, SETTING_DISABLE_SECURE_BOOT_NOTICE, &more_info, lmprintf(MSG_128, "Secure Boot"), lmprintf(MSG_129));
-			}
 		} else if (SCODE_CODE(FormatStatus) == ERROR_CANCELLED) {
 			SendMessage(hProgress, PBM_SETSTATE, (WPARAM)PBST_PAUSED, 0);
 			SetTaskbarProgressState(TASKBAR_PAUSED);
@@ -3141,7 +3212,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 	BOOL disable_hogger = FALSE, previous_enable_HDDs = FALSE, vc = IsRegistryNode(REGKEY_HKCU, vs_reg);
 	BOOL alt_pressed = FALSE, alt_command = FALSE;
 	BYTE *loc_data;
-	DWORD loc_size, u, size = sizeof(u);
+	DWORD loc_size, u = 0, size = sizeof(u);
 	char tmp_path[MAX_PATH] = "", loc_file[MAX_PATH] = "", ini_path[MAX_PATH] = "", ini_flags[] = "rb";
 	char *tmp, *locale_name = NULL, **argv = NULL;
 	wchar_t **wenv, **wargv;
@@ -3184,8 +3255,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 	// nail... Also, no, Coverity, we never need to care about freeing kernel32 as a library.
 	// coverity[leaked_storage]
 	pfSetDefaultDllDirectories = (SetDefaultDllDirectories_t)
-		GetProcAddress(LoadLibraryExW(kernel32_path, NULL, LOAD_LIBRARY_SEARCH_SYSTEM32),
-			"SetDefaultDllDirectories");
+		GetProcAddress(LoadLibraryW(kernel32_path), "SetDefaultDllDirectories");
 	if (pfSetDefaultDllDirectories != NULL)
 		pfSetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32);
 
@@ -3238,13 +3308,16 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 	}
 #endif
 
-#if (SOLUTION == appstore)
-	appstore_version = TRUE;
-	for (i = 0; i < ARRAYSIZE(appstore_chunk); i++)
-		if (strstr(app_dir, appstore_chunk[0]) == NULL)
-			goto out;
-	goto skip_args_processing;
-#endif
+	// Look for a rufus.app file in the current app directory
+	// Since Microsoft makes it downright impossible to pass an arg in the app manifest
+	// and the automated VS2019 package building process doesn't like renaming the .exe
+	// right under its nose (else we would use the same trick as for portable vs regular)
+	// we use yet another workaround to detect if we are running the AppStore version...
+	static_sprintf(ini_path, "%s\\rufus.app", app_dir);
+	if (PathFileExistsU(ini_path)) {
+		appstore_version = TRUE;
+		goto skip_args_processing;
+	}
 
 	// We have to process the arguments before we acquire the lock and process the locale
 	PF_INIT(__wgetmainargs, Msvcrt);
@@ -3371,6 +3444,8 @@ skip_args_processing:
 	vc |= (safe_strcmp(tmp, cert_name[0]) == 0);
 	if (fd != NULL) {
 		ini_file = ini_path;
+		// In portable mode, use the app directory for all local storage
+		static_strcpy(app_data_dir, app_dir);
 		fclose(fd);
 	}
 	uprintf("Will use settings from %s", (ini_file != NULL)?"INI file":"registry");
@@ -3387,7 +3462,8 @@ skip_args_processing:
 	advanced_mode_format = ReadSettingBool(SETTING_ADVANCED_MODE_FORMAT);
 	preserve_timestamps = ReadSettingBool(SETTING_PRESERVE_TIMESTAMPS);
 	use_fake_units = !ReadSettingBool(SETTING_USE_PROPER_SIZE_UNITS);
-	use_vds = ReadSettingBool(SETTING_USE_VDS);
+	is_vds_available = IsVdsAvailable(FALSE);
+	use_vds = ReadSettingBool(SETTING_USE_VDS) && is_vds_available;
 	usb_debug = ReadSettingBool(SETTING_ENABLE_USB_DEBUG);
 	cdio_loglevel_default = usb_debug ? CDIO_LOG_DEBUG : CDIO_LOG_WARN;
 	detect_fakes = !ReadSettingBool(SETTING_DISABLE_FAKE_DRIVES_CHECK);
@@ -3628,8 +3704,8 @@ relaunch:
 				WriteSetting32(SETTING_DEFAULT_THREAD_PRIORITY, default_thread_priority - THREAD_PRIORITY_ABOVE_NORMAL);
 				if (format_thread != NULL)
 					SetThreadPriority(format_thread, default_thread_priority);
-				if (apply_wim_thread != NULL)
-					SetThreadPriority(apply_wim_thread, default_thread_priority);
+				if (wim_thread != NULL)
+					SetThreadPriority(wim_thread, default_thread_priority);
 			}
 			PrintStatus(STATUS_MSG_TIMEOUT, MSG_318, default_thread_priority);
 			continue;
@@ -3670,11 +3746,12 @@ relaunch:
 					CyclePort(index);
 				continue;
 			}
-			// Alt-D => Delete the 'rufus_files' subdirectory
+			// Alt-D => Delete the subdirectory where Rufus keeps its files
 			if ((msg.message == WM_SYSKEYDOWN) && (msg.wParam == 'D')) {
 				static_sprintf(tmp_path, "%s\\%s", app_data_dir, FILES_DIR);
-				PrintStatus(STATUS_MSG_TIMEOUT, MSG_264, tmp_path);
+				PrintStatusDebug(STATUS_MSG_TIMEOUT, MSG_264, tmp_path);
 				SHDeleteDirectoryExU(NULL, tmp_path, FOF_SILENT | FOF_NOERRORUI | FOF_NOCONFIRMATION);
+				user_deleted_rufus_dir = TRUE;
 				continue;
 			}
 			// Alt-E => Enhanced installation mode (allow dual UEFI/BIOS mode and FAT32 for Windows)
@@ -3816,9 +3893,11 @@ relaunch:
 			}
 			// Alt-V => Use VDS facilities for formatting
 			if ((msg.message == WM_SYSKEYDOWN) && (msg.wParam == 'V')) {
-				use_vds = !use_vds;
-				WriteSettingBool(SETTING_USE_VDS, use_vds);
-				PrintStatusTimeout("VDS", use_vds);
+				if (is_vds_available) {
+					use_vds = !use_vds;
+					WriteSettingBool(SETTING_USE_VDS, use_vds);
+					PrintStatusTimeout("VDS", use_vds);
+				}
 				continue;
 			}
 			// Alt-W => Enable VMWare disk detection
@@ -3946,6 +4025,7 @@ out:
 	if ((!automount) && (!SetAutoMount(FALSE)))
 		uprintf("Failed to restore AutoMount to disabled");
 	ubflush();
+	_chdirU(app_dir);
 	// Unconditional delete with retry, just in case...
 	for (i = 0; (!DeleteFileA(cmdline_hogger)) && (i <= 10); i++)
 		Sleep(200);

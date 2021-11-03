@@ -70,7 +70,7 @@ extern uint32_t dur_mins, dur_secs;
 extern uint32_t wim_nb_files, wim_proc_files, wim_extra_files;
 static int actual_fs_type, wintogo_index = -1, wininst_index = 0;
 extern BOOL force_large_fat32, enable_ntfs_compression, lock_drive, zero_drive, fast_zeroing, enable_file_indexing, write_as_image;
-extern BOOL use_vds, write_as_esp;
+extern BOOL use_vds, write_as_esp, is_vds_available;
 uint8_t *grub2_buf = NULL, *sec_buf = NULL;
 long grub2_len;
 
@@ -342,10 +342,12 @@ static BOOL FormatNativeVds(DWORD DriveIndex, uint64_t PartitionOffset, DWORD Cl
 	WCHAR *wVolumeName = NULL, *wLabel = utf8_to_wchar(Label), *wFSName = utf8_to_wchar(FSName);
 
 	if ((strcmp(FSName, FileSystemLabel[FS_EXFAT]) == 0) && !((dur_mins == 0) && (dur_secs == 0))) {
-		PrintInfoDebug(0, MSG_220, FSName, dur_mins, dur_secs);
+		PrintInfo(0, MSG_220, FSName, dur_mins, dur_secs);
 	} else {
-		PrintInfoDebug(0, MSG_222, FSName);
+		PrintInfo(0, MSG_222, FSName);
 	}
+	uprintf("Formatting to %s (using VDS)", FSName);
+
 	UpdateProgressWithInfoInit(NULL, TRUE);
 	VolumeName = GetLogicalName(DriveIndex, PartitionOffset, TRUE, TRUE);
 	wVolumeName = utf8_to_wchar(VolumeName);
@@ -585,10 +587,12 @@ static BOOL FormatNative(DWORD DriveIndex, uint64_t PartitionOffset, DWORD Clust
 	size_t i;
 
 	if ((strcmp(FSName, FileSystemLabel[FS_EXFAT]) == 0) && !((dur_mins == 0) && (dur_secs == 0))) {
-		PrintInfoDebug(0, MSG_220, FSName, dur_mins, dur_secs);
+		PrintInfo(0, MSG_220, FSName, dur_mins, dur_secs);
 	} else {
-		PrintInfoDebug(0, MSG_222, FSName);
+		PrintInfo(0, MSG_222, FSName);
 	}
+	uprintf("Formatting to %s (using IFS)", FSName);
+
 	VolumeName = GetLogicalName(DriveIndex, PartitionOffset, TRUE, TRUE);
 	wVolumeName = utf8_to_wchar(VolumeName);
 	if (wVolumeName == NULL) {
@@ -710,19 +714,16 @@ out:
 static BOOL ClearMBRGPT(HANDLE hPhysicalDrive, LONGLONG DiskSize, DWORD SectorSize, BOOL add1MB)
 {
 	BOOL r = FALSE;
-	uint64_t i, last_sector = DiskSize/SectorSize, num_sectors_to_clear;
-	unsigned char* pBuf = (unsigned char*) calloc(SectorSize, 1);
+	LARGE_INTEGER liFilePointer;
+	uint64_t num_sectors_to_clear;
+	unsigned char* pZeroBuf = NULL;
 
 	PrintInfoDebug(0, MSG_224);
-	if (pBuf == NULL) {
-		FormatStatus = ERROR_SEVERITY_ERROR|FAC(FACILITY_STORAGE)|ERROR_NOT_ENOUGH_MEMORY;
-		goto out;
-	}
 	// http://en.wikipedia.org/wiki/GUID_Partition_Table tells us we should clear 34 sectors at the
 	// beginning and 33 at the end. We bump these values to MAX_SECTORS_TO_CLEAR each end to help
 	// with reluctant access to large drive.
 
-	// We try to clear at least 1MB + the PBR when Large FAT32 is selected (add1MB), but
+	// We try to clear at least 1MB + the VBR when Large FAT32 is selected (add1MB), but
 	// don't do it otherwise, as it seems unnecessary and may take time for slow drives.
 	// Also, for various reasons (one of which being that Windows seems to have issues
 	// with GPT drives that contain a lot of small partitions) we try not not to clear
@@ -733,22 +734,28 @@ static BOOL ClearMBRGPT(HANDLE hPhysicalDrive, LONGLONG DiskSize, DWORD SectorSi
 		num_sectors_to_clear = (DWORD)((add1MB ? 2048 : 0) + MAX_SECTORS_TO_CLEAR);
 
 	uprintf("Erasing %d sectors", num_sectors_to_clear);
-	for (i = 0; i < num_sectors_to_clear; i++) {
-		CHECK_FOR_USER_CANCEL;
-		if (write_sectors(hPhysicalDrive, SectorSize, i, 1, pBuf) != SectorSize)
-			goto out;
+	pZeroBuf = calloc(SectorSize, (size_t)num_sectors_to_clear);
+	if (pZeroBuf == NULL) {
+		FormatStatus = ERROR_SEVERITY_ERROR | FAC(FACILITY_STORAGE) | ERROR_NOT_ENOUGH_MEMORY;
+		goto out;
 	}
-	for (i = last_sector - MAX_SECTORS_TO_CLEAR; i < last_sector; i++) {
-		CHECK_FOR_USER_CANCEL;
-		// Windows seems to be an ass about keeping a lock on a backup GPT,
-		// so we try to be lenient about not being able to clear it.
-		if (write_sectors(hPhysicalDrive, SectorSize, i, 1, pBuf) != SectorSize)
-			break;
+	liFilePointer.QuadPart = 0ULL;
+	if (!SetFilePointerEx(hPhysicalDrive, liFilePointer, &liFilePointer, FILE_BEGIN) || (liFilePointer.QuadPart != 0ULL))
+		uprintf("Warning: Could not reset disk position");
+	if (!WriteFileWithRetry(hPhysicalDrive, pZeroBuf, (DWORD)(SectorSize * num_sectors_to_clear), NULL, WRITE_RETRIES))
+		goto out;
+	CHECK_FOR_USER_CANCEL;
+	liFilePointer.QuadPart = DiskSize - (LONGLONG)SectorSize * MAX_SECTORS_TO_CLEAR;
+	// Windows seems to be an ass about keeping a lock on a backup GPT,
+	// so we try to be lenient about not being able to clear it.
+	if (SetFilePointerEx(hPhysicalDrive, liFilePointer, &liFilePointer, FILE_BEGIN)) {
+		IGNORE_RETVAL(WriteFileWithRetry(hPhysicalDrive, pZeroBuf,
+			SectorSize * MAX_SECTORS_TO_CLEAR, NULL, WRITE_RETRIES));
 	}
 	r = TRUE;
 
 out:
-	safe_free(pBuf);
+	safe_free(pZeroBuf);
 	return r;
 }
 
@@ -1413,7 +1420,7 @@ static BOOL SetupWinToGo(DWORD DriveIndex, const char* drive_name, BOOL use_esp)
 
 	UpdateProgressWithInfo(OP_FILE_COPY, MSG_267, wim_proc_files + 2 * wim_extra_files, wim_nb_files);
 
-	uprintf("Disable the use of the Windows Recovery Environment using command:");
+	uprintf("Disabling use of the Windows Recovery Environment using command:");
 	static_sprintf(cmd, "%s\\bcdedit.exe /store %s\\EFI\\Microsoft\\Boot\\BCD /set {default} recoveryenabled no",
 		sysnative_dir, (use_esp) ? ms_efi : drive_name);
 	uprintf(cmd);
@@ -1427,6 +1434,85 @@ static BOOL SetupWinToGo(DWORD DriveIndex, const char* drive_name, BOOL use_esp)
 	}
 
 	return TRUE;
+}
+
+/*
+ * Edit sources/boot.wim registry to remove Windows 11 install restrictions
+ */
+BOOL RemoveWindows11Restrictions(char drive_letter)
+{
+	BOOL r = FALSE, is_hive_mounted = FALSE;
+	int i;
+	const int wim_index = 2;
+	const char* offline_hive_name = "RUFUS_OFFLINE_HIVE";
+	const char* key_name[] = { "BypassTPMCheck", "BypassSecureBootCheck" };
+	char boot_wim_path[] = "#:\\sources\\boot.wim", key_path[64];
+	char* mount_path = NULL;
+	char path[MAX_PATH];
+	HKEY hKey = NULL, hSubKey = NULL;
+	LSTATUS status;
+	DWORD dwDisp, dwVal = 1;
+
+	boot_wim_path[0] = drive_letter;
+
+	UpdateProgressWithInfoForce(OP_PATCH, MSG_324, 0, PATCH_PROGRESS_TOTAL);
+	uprintf("Mounting '%s'...", boot_wim_path);
+
+	mount_path = WimMountImage(boot_wim_path, wim_index);
+	if (mount_path == NULL)
+		goto out;
+
+	static_sprintf(path, "%s\\Windows\\System32\\config\\SYSTEM", mount_path);
+	if (!MountRegistryHive(HKEY_LOCAL_MACHINE, offline_hive_name, path))
+		goto out;
+	UpdateProgressWithInfoForce(OP_PATCH, MSG_324, 102, PATCH_PROGRESS_TOTAL);
+	is_hive_mounted = TRUE;
+
+	static_sprintf(key_path, "%s\\Setup", offline_hive_name);
+	status = RegOpenKeyExA(HKEY_LOCAL_MACHINE, key_path, 0, KEY_READ | KEY_CREATE_SUB_KEY, &hKey);
+	if (status != ERROR_SUCCESS) {
+		SetLastError(status);
+		uprintf("Could not open 'HKLM\\SYSTEM\\Setup' registry key: %s", WindowsErrorString());
+		goto out;
+	}
+
+	status = RegCreateKeyExA(hKey, "LabConfig", 0, NULL, 0,
+		KEY_SET_VALUE | KEY_QUERY_VALUE | KEY_CREATE_SUB_KEY, NULL, &hSubKey, &dwDisp);
+	if (status != ERROR_SUCCESS) {
+		SetLastError(status);
+		uprintf("Could not create 'HKLM\\SYSTEM\\Setup\\LabConfig' registry key: %s", WindowsErrorString());
+		goto out;
+	}
+
+	for (i = 0; i < ARRAYSIZE(key_name); i++) {
+		status = RegSetValueExA(hSubKey, key_name[i], 0, REG_DWORD, (LPBYTE)&dwVal, sizeof(DWORD));
+		if (status != ERROR_SUCCESS) {
+			SetLastError(status);
+			uprintf("Could not set 'HKLM\\SYSTEM\\Setup\\LabConfig\\%s' registry key: %s",
+				key_name[i], WindowsErrorString());
+			goto out;
+		}
+		uprintf("Created 'HKLM\\SYSTEM\\Setup\\LabConfig\\%s' registry key", key_name[i]);
+	}
+	UpdateProgressWithInfoForce(OP_PATCH, MSG_324, 103, PATCH_PROGRESS_TOTAL);
+	r = TRUE;
+
+out:
+	if (hSubKey != NULL)
+		RegCloseKey(hSubKey);
+	if (hKey != NULL)
+		RegCloseKey(hKey);
+	if (is_hive_mounted) {
+		UnmountRegistryHive(HKEY_LOCAL_MACHINE, offline_hive_name);
+		UpdateProgressWithInfoForce(OP_PATCH, MSG_324, 104, PATCH_PROGRESS_TOTAL);
+	}
+	if (mount_path) {
+		uprintf("Unmounting '%s'...", boot_wim_path, wim_index);
+		WimUnmountImage(boot_wim_path, wim_index);
+	}
+	UpdateProgressWithInfo(OP_PATCH, MSG_324, PATCH_PROGRESS_TOTAL, PATCH_PROGRESS_TOTAL);
+	free(mount_path);
+	return r;
 }
 
 static void update_progress(const uint64_t processed_bytes)
@@ -1769,7 +1855,9 @@ DWORD WINAPI FormatThread(void* param)
 {
 	int r;
 	BOOL ret, use_large_fat32, windows_to_go, actual_lock_drive = lock_drive;
-	BOOL need_logical = FALSE;
+	// Windows 11 and VDS (which I suspect is what fmifs.dll's FormatEx() is now calling behind the scenes)
+	// require us to unlock the physical drive to format the drive, else access denied is returned.
+	BOOL need_logical = FALSE, must_unlock_physical = (use_vds || nWindowsVersion >= WINDOWS_11);
 	DWORD cr, DriveIndex = (DWORD)(uintptr_t)param, ClusterSize, Flags;
 	HANDLE hPhysicalDrive = INVALID_HANDLE_VALUE;
 	HANDLE hLogicalVolume = INVALID_HANDLE_VALUE;
@@ -1786,7 +1874,7 @@ DWORD WINAPI FormatThread(void* param)
 
 	use_large_fat32 = (fs_type == FS_FAT32) && ((SelectedDrive.DiskSize > LARGE_FAT32_SIZE) || (force_large_fat32));
 	windows_to_go = (image_options & IMOP_WINTOGO) && (boot_type == BT_IMAGE) && HAS_WINTOGO(img_report) &&
-		ComboBox_GetCurItemData(hImageOption);
+		(ComboBox_GetCurItemData(hImageOption) == IMOP_WIN_TO_GO);
 	large_drive = (SelectedDrive.DiskSize > (1*TB));
 	if (large_drive)
 		uprintf("Notice: Large drive detected (may produce short writes)");
@@ -1806,6 +1894,10 @@ DWORD WINAPI FormatThread(void* param)
 	// On pre 1703 platforms (and even on later ones), anything with ext2/ext3 doesn't sit
 	// too well with Windows. Same with ESPs. Relaxing our locking rules seems to help...
 	if ((extra_partitions & (XP_ESP | XP_CASPER)) || (fs_type >= FS_EXT2))
+		actual_lock_drive = FALSE;
+	// Windows 11 is a lot more proactive in locking ESPs and MSRs than previous versions
+	// were, meaning that we also can't lock the drive without incurring errors...
+	if ((nWindowsVersion >= WINDOWS_11) && extra_partitions)
 		actual_lock_drive = FALSE;
 
 	PrintInfoDebug(0, MSG_225);
@@ -1835,12 +1927,15 @@ DWORD WINAPI FormatThread(void* param)
 	// for VDS to be able to delete the partitions that reside on it...
 	safe_unlockclose(hPhysicalDrive);
 	PrintInfo(0, MSG_239, lmprintf(MSG_307));
-	if (!DeletePartition(DriveIndex, 0, FALSE)) {
+	if (!is_vds_available || !DeletePartition(DriveIndex, 0, TRUE)) {
+		uprintf("Warning: Could not delete partition(s): %s", is_vds_available ? WindowsErrorString() : "VDS is not available");
 		SetLastError(FormatStatus);
 		FormatStatus = 0;
 		// If we couldn't delete partitions, Windows give us trouble unless we
 		// request access to the logical drive. Don't ask me why!
 		need_logical = TRUE;
+		// Also, since we couldn't clean the disk, we need to disable drive locking
+		actual_lock_drive = FALSE;
 	}
 
 	// An extra refresh of the (now empty) partition data here appears to be helpful
@@ -2005,9 +2100,10 @@ DWORD WINAPI FormatThread(void* param)
 	}
 	hLogicalVolume = INVALID_HANDLE_VALUE;
 
-	// VDS wants us to unlock the phys
-	if (use_vds) {
+	if (must_unlock_physical)
 		safe_unlockclose(hPhysicalDrive);
+
+	if (use_vds) {
 		uprintf("Refreshing drive layout...");
 		// Note: This may leave the device disabled on re-plug or reboot
 		// so only do this for the experimental VDS path for now...
@@ -2072,7 +2168,7 @@ DWORD WINAPI FormatThread(void* param)
 		goto out;
 	}
 
-	if (use_vds) {
+	if (must_unlock_physical) {
 		// Get RW access back to the physical drive...
 		hPhysicalDrive = GetPhysicalHandle(DriveIndex, actual_lock_drive, TRUE, !actual_lock_drive);
 		if (hPhysicalDrive == INVALID_HANDLE_VALUE) {
@@ -2242,9 +2338,13 @@ DWORD WINAPI FormatThread(void* param)
 					}
 				}
 				if ( (target_type == TT_BIOS) && HAS_WINPE(img_report) ) {
-					// Apply WinPe fixup
+					// Apply WinPE fixup
 					if (!SetupWinPE(drive_name[0]))
 						FormatStatus = ERROR_SEVERITY_ERROR|FAC(FACILITY_STORAGE)|APPERR(ERROR_CANT_PATCH);
+				}
+				if (ComboBox_GetCurItemData(hImageOption) == IMOP_WIN_EXTENDED) {
+					if (!RemoveWindows11Restrictions(drive_name[0]))
+						FormatStatus = ERROR_SEVERITY_ERROR | FAC(FACILITY_STORAGE) | APPERR(ERROR_CANT_PATCH);
 				}
 			}
 		}

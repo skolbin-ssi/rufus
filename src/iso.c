@@ -102,6 +102,7 @@ static const char* wininst_name[] = { "install.wim", "install.esd", "install.swm
 // If the disc was mastered properly, GRUB/EFI will take care of itself
 static const char* grub_dirname = "/boot/grub/i386-pc";
 static const char* grub_cfg[] = { "grub.cfg", "loopback.cfg" };
+static const char* compatresources_dll = "compatresources.dll";
 static const char* menu_cfg = "menu.cfg";
 // NB: Do not alter the order of the array below without validating hardcoded indexes in check_iso_props
 static const char* syslinux_cfg[] = { "isolinux.cfg", "syslinux.cfg", "extlinux.conf", "txt.cfg" };
@@ -175,6 +176,12 @@ static BOOL check_iso_props(const char* psz_dirname, int64_t file_length, const 
 			if ((scan_only) && (i == 1) && (safe_stricmp(psz_dirname, efi_dirname) == 0))
 				img_report.has_efi_syslinux = TRUE;
 		}
+	}
+
+	// Check for archiso loader/entries/*.conf files
+	if (safe_stricmp(psz_dirname, "/loader/entries") == 0) {
+		len = strlen(psz_basename);
+		props->is_conf = ((len > 4) && (stricmp(&psz_basename[len - 5], ".conf") == 0));
 	}
 
 	// Check for an old incompatible c32 file anywhere
@@ -260,17 +267,22 @@ static BOOL check_iso_props(const char* psz_dirname, int64_t file_length, const 
 					img_report.has_efi |= (2 << i);	// start at 2 since "bootmgr.efi" is bit 0
 		}
 
-		// Check for "install.###" in "###/sources/"
 		if (psz_dirname != NULL) {
-			if (safe_stricmp(&psz_dirname[max(0, ((int)safe_strlen(psz_dirname)) - ((int)strlen(sources_str)))], sources_str) == 0) {
+			if (safe_stricmp(&psz_dirname[max(0, ((int)safe_strlen(psz_dirname)) -
+				((int)strlen(sources_str)))], sources_str) == 0) {
+				// Check for "install.###" in "###/sources/"
 				for (i = 0; i < ARRAYSIZE(wininst_name); i++) {
 					if (safe_stricmp(psz_basename, wininst_name[i]) == 0) {
 						if (img_report.wininst_index < MAX_WININST) {
-							static_sprintf(img_report.wininst_path[img_report.wininst_index], "?:%s", psz_fullpath);
+							static_sprintf(img_report.wininst_path[img_report.wininst_index],
+								"?:%s", psz_fullpath);
 							img_report.wininst_index++;
 						}
 					}
 				}
+				// Check for "compatresources.dll" in "###/sources/"
+				if (safe_stricmp(psz_basename, compatresources_dll) == 0)
+					img_report.has_compatresources_dll = TRUE;
 			}
 		}
 
@@ -364,6 +376,16 @@ static void fix_config(const char* psz_fullpath, const char* psz_path, const cha
 			} else if (replace_in_token_data(src, (props->is_conf) ? "options" : "append",
 				iso_label, usb_label, TRUE) != NULL) {
 				uprintf("  Patched %s: '%s' ➔ '%s'\n", src, iso_label, usb_label);
+				modified = TRUE;
+			}
+			//
+			// Since version 8.2, and https://github.com/rhinstaller/anaconda/commit/a7661019546ec1d8b0935f9cb0f151015f2e1d95,
+			// Red Hat derivatives have changed their CD-ROM detection policy which leads to the installation source
+			// not being found. So we need to use 'inst.repo' instead of 'inst.stage2' in the kernel options.
+			//
+			if (img_report.rh8_derivative && (replace_in_token_data(src, props->is_grub_cfg ?
+				"linuxefi" : "append", "inst.stage2", "inst.repo", TRUE) != NULL)) {
+				uprintf("  Patched %s: '%s' ➔ '%s'\n", src, "inst.stage2", "inst.repo");
 				modified = TRUE;
 			}
 		}
@@ -571,7 +593,7 @@ static int udf_extract_files(udf_t *p_udf, udf_dirent_t *p_udf_dirent, const cha
 			// The drawback however is with cancellation. With a large file, CloseHandle()
 			// may take forever to complete and is not interruptible. We try to detect this.
 			ISO_BLOCKING(safe_closehandle(file_handle));
-			if (props.is_cfg)
+			if (props.is_cfg || props.is_conf)
 				fix_config(psz_sanpath, psz_path, psz_basename, &props);
 			safe_free(psz_sanpath);
 		}
@@ -797,7 +819,7 @@ static int iso_extract_files(iso9660_t* p_iso, const char *psz_path)
 					uprintf("  Could not set timestamp: %s", WindowsErrorString());
 			}
 			ISO_BLOCKING(safe_closehandle(file_handle));
-			if (props.is_cfg)
+			if (props.is_cfg || props.is_conf)
 				fix_config(psz_sanpath, psz_path, psz_basename, &props);
 			safe_free(psz_sanpath);
 		}
@@ -888,7 +910,7 @@ BOOL ExtractISO(const char* src_iso, const char* dest_dir, BOOL scan)
 	p_udf = udf_open(src_iso);
 	if (p_udf == NULL)
 		goto try_iso;
-	uprintf("%sImage is an UDF image", spacing);
+	uprintf("%sImage is a UDF image", spacing);
 
 	p_udf_root = udf_get_root(p_udf, true, 0);
 	if (p_udf_root == NULL) {
@@ -1082,6 +1104,35 @@ out:
 			else {
 				uprintf("  Could not detect Grub version");
 				img_report.has_grub2 = FALSE;
+			}
+		}
+		if (img_report.has_compatresources_dll) {
+			// So that we don't have to extract the XML index from boot/install.wim
+			// to find if we're dealing with Windows 11, we isolate the version from
+			// sources/compatresources.dll, which is much faster...
+			VS_FIXEDFILEINFO* ver_info = NULL;
+			DWORD ver_handle = 0, ver_size;
+			UINT value_len = 0;
+			// coverity[swapped_arguments]
+			if (GetTempFileNameU(temp_dir, APPLICATION_NAME, 0, path) != 0) {
+				size = (size_t)ExtractISOFile(src_iso, "sources/compatresources.dll", path, FILE_ATTRIBUTE_NORMAL);
+				ver_size = GetFileVersionInfoSizeU(path, &ver_handle);
+				if (ver_size != 0) {
+					buf = malloc(ver_size);
+					if ((buf != NULL) && GetFileVersionInfoU(path, ver_handle, ver_size, buf) &&
+						VerQueryValueA(buf, "\\", (LPVOID)&ver_info, &value_len) && (value_len != 0)) {
+						if (ver_info->dwSignature == VS_FFI_SIGNATURE) {
+							img_report.win_version.major = HIWORD(ver_info->dwFileVersionMS);
+							img_report.win_version.minor = LOWORD(ver_info->dwFileVersionMS);
+							img_report.win_version.build = HIWORD(ver_info->dwFileVersionLS);
+							img_report.win_version.revision = LOWORD(ver_info->dwFileVersionLS);
+							if ((img_report.win_version.major == 10) && (img_report.win_version.build > 20000))
+								img_report.win_version.major = 11;
+						}
+					}
+					free(buf);
+				}
+				DeleteFileU(path);
 			}
 		}
 		StrArrayDestroy(&config_path);
@@ -1526,9 +1577,11 @@ BOOL DumpFatDir(const char* path, int32_t cluster)
 				written = 0;
 				s = libfat_clustertosector(lf_fs, dirpos.cluster);
 				while ((s != 0) && (s < 0xFFFFFFFFULL) && (written < diritem.size)) {
+					buf = libfat_get_sector(lf_fs, s);
+					if (buf == NULL)
+						FormatStatus = ERROR_SEVERITY_ERROR | FAC(FACILITY_STORAGE) | ERROR_SECTOR_NOT_FOUND;
 					if (FormatStatus)
 						goto out;
-					buf = libfat_get_sector(lf_fs, s);
 					size = MIN(LIBFAT_SECTOR_SIZE, diritem.size - written);
 					if (!WriteFileWithRetry(handle, buf, size, &size, WRITE_RETRIES) ||
 						(size != MIN(LIBFAT_SECTOR_SIZE, diritem.size - written))) {
