@@ -1,7 +1,7 @@
 /*
  * Rufus: The Reliable USB Formatting Utility
  * UI-related function calls
- * Copyright © 2018-2021 Pete Batard <pete@akeo.ie>
+ * Copyright © 2018-2022 Pete Batard <pete@akeo.ie>
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -575,8 +575,9 @@ void SetSectionHeaders(HWND hDlg)
 		SendDlgItemMessageA(hDlg, section_control_ids[i], WM_SETFONT, (WPARAM)hf, TRUE);
 		hCtrl = GetDlgItem(hDlg, section_control_ids[i]);
 		memset(wtmp, 0, sizeof(wtmp));
-		GetWindowTextW(hCtrl, wtmp, ARRAYSIZE(wtmp) - 3);
+		GetWindowTextW(hCtrl, wtmp, ARRAYSIZE(wtmp) - 4);
 		wlen = wcslen(wtmp);
+		assert(wlen < ARRAYSIZE(wtmp) - 2);
 		wtmp[wlen++] = L' ';
 		wtmp[wlen++] = L' ';
 		SetWindowTextW(hCtrl, wtmp);
@@ -784,12 +785,12 @@ void ToggleImageOptions(void)
 
 	assert(popcnt8(image_options) <= 1);
 
-	// Keep a copy of the "Image Option" text (so that we don't have to duplicate its transation in the .loc)
+	// Keep a copy of the "Image Option" text (so that we don't have to duplicate its translation in the .loc)
 	if (image_option_txt[0] == 0)
 		GetWindowTextU(GetDlgItem(hMainDialog, IDS_IMAGE_OPTION_TXT), image_option_txt, sizeof(image_option_txt));
 
-	if ( ((has_wintogo) && !(image_options & IMOP_WINTOGO)) ||
-		 ((!has_wintogo) && (image_options & IMOP_WINTOGO)) ) {
+	if (((has_wintogo) && !(image_options & IMOP_WINTOGO)) ||
+		((!has_wintogo) && (image_options & IMOP_WINTOGO))) {
 		image_options ^= IMOP_WINTOGO;
 		if (image_options & IMOP_WINTOGO) {
 			// Set the Windows To Go selection in the dropdown
@@ -1069,7 +1070,7 @@ void CreateAdditionalControls(HWND hDlg)
 	hAdvancedDeviceToolbar = CreateWindowEx(0, TOOLBARCLASSNAME, NULL, TOOLBAR_STYLE,
 		0, 0, 0, 0, hMainDialog, (HMENU)IDC_ADVANCED_DEVICE_TOOLBAR, hMainInstance, NULL);
 	SendMessage(hAdvancedDeviceToolbar, CCM_SETVERSION, (WPARAM)6, 0);
-	memset(tbToolbarButtons, 0, sizeof(TBBUTTON));
+	memset(tbToolbarButtons, 0, sizeof(tbToolbarButtons));
 	tbToolbarButtons[0].idCommand = IDC_ADVANCED_DRIVE_PROPERTIES;
 	tbToolbarButtons[0].fsStyle = BTNS_SHOWTEXT | BTNS_AUTOSIZE;
 	tbToolbarButtons[0].fsState = TBSTATE_ENABLED;
@@ -1091,7 +1092,7 @@ void CreateAdditionalControls(HWND hDlg)
 	hAdvancedFormatToolbar = CreateWindowEx(0, TOOLBARCLASSNAME, NULL, TOOLBAR_STYLE,
 		0, 0, 0, 0, hMainDialog, (HMENU)IDC_ADVANCED_FORMAT_TOOLBAR, hMainInstance, NULL);
 	SendMessage(hAdvancedFormatToolbar, CCM_SETVERSION, (WPARAM)6, 0);
-	memset(tbToolbarButtons, 0, sizeof(TBBUTTON));
+	memset(tbToolbarButtons, 0, sizeof(tbToolbarButtons));
 	tbToolbarButtons[0].idCommand = IDC_ADVANCED_FORMAT_OPTIONS;
 	tbToolbarButtons[0].fsStyle = BTNS_SHOWTEXT | BTNS_AUTOSIZE;
 	tbToolbarButtons[0].fsState = TBSTATE_ENABLED;

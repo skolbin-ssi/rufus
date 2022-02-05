@@ -106,7 +106,7 @@
 #define UDF_FORMAT_SPEED            3.1f		// Speed estimate at which we expect UDF drives to be formatted (GB/s)
 #define UDF_FORMAT_WARN             20			// Duration (in seconds) above which we warn about long UDF formatting times
 #define MAX_FAT32_SIZE              2.0f		// Threshold above which we disable FAT32 formatting (in TB)
-#define FAT32_CLUSTER_THRESHOLD     1.011f		// For FAT32, cluster size changes don't occur at power of 2 boundaries but sligthly above
+#define FAT32_CLUSTER_THRESHOLD     1.011f		// For FAT32, cluster size changes don't occur at power of 2 boundaries but slightly above
 #define DD_BUFFER_SIZE              (32 * 1024 * 1024)	// Minimum size of buffer to use for DD operations
 #define UBUFFER_SIZE                4096
 #define RSA_SIGNATURE_SIZE          256
@@ -132,7 +132,7 @@
 #ifndef STRINGIFY
 #define STRINGIFY(x)                #x
 #endif
-#define PERCENTAGE(percent, value)  ((1ULL * percent * value) / 100ULL)
+#define PERCENTAGE(percent, value)  ((1ULL * (percent) * (value)) / 100ULL)
 #define IsChecked(CheckBox_ID)      (IsDlgButtonChecked(hMainDialog, CheckBox_ID) == BST_CHECKED)
 #define MB_IS_RTL                   (right_to_left_mode?MB_RTLREADING|MB_RIGHT:0)
 #define CHECK_FOR_USER_CANCEL       if (IS_ERROR(FormatStatus) && (SCODE_CODE(FormatStatus) == ERROR_CANCELLED)) goto out
@@ -146,10 +146,10 @@
 #define safe_mm_free(p) do {_mm_free((void*)p); p = NULL;} while(0)
 #define safe_min(a, b) min((size_t)(a), (size_t)(b))
 #define safe_strcp(dst, dst_max, src, count) do {memcpy(dst, src, safe_min(count, dst_max)); \
-	((char*)dst)[safe_min(count, dst_max)-1] = 0;} while(0)
+	((char*)(dst))[safe_min(count, dst_max)-1] = 0;} while(0)
 #define safe_strcpy(dst, dst_max, src) safe_strcp(dst, dst_max, src, safe_strlen(src)+1)
 #define static_strcpy(dst, src) safe_strcpy(dst, sizeof(dst), src)
-#define safe_strncat(dst, dst_max, src, count) strncat(dst, src, safe_min(count, dst_max - safe_strlen(dst) - 1))
+#define safe_strncat(dst, dst_max, src, count) strncat(dst, src, safe_min(count, (dst_max) - safe_strlen(dst) - 1))
 #define safe_strcat(dst, dst_max, src) safe_strncat(dst, dst_max, src, safe_strlen(src)+1)
 #define static_strcat(dst, src) safe_strcat(dst, sizeof(dst), src)
 #define safe_strcmp(str1, str2) strcmp(((str1==NULL)?"<NULL>":str1), ((str2==NULL)?"<NULL>":str2))
@@ -161,7 +161,7 @@
 #define safe_release_dc(hDlg, hDC) do {if ((hDC != INVALID_HANDLE_VALUE) && (hDC != NULL)) {ReleaseDC(hDlg, hDC); hDC = NULL;}} while(0)
 #define safe_sprintf(dst, count, ...) do {_snprintf(dst, count, __VA_ARGS__); (dst)[(count)-1] = 0; } while(0)
 #define static_sprintf(dst, ...) safe_sprintf(dst, sizeof(dst), __VA_ARGS__)
-#define safe_strlen(str) ((((char*)str)==NULL)?0:strlen(str))
+#define safe_strlen(str) ((((char*)(str))==NULL)?0:strlen(str))
 #define safe_strdup _strdup
 #define to_windows_path(str) do { size_t __i; for (__i = 0; __i < safe_strlen(str); __i++) if (str[__i] == '/') str[__i] = '\\'; } while(0)
 #if defined(_MSC_VER)
@@ -178,7 +178,7 @@ extern void _uprintfs(const char *str);
 #define vvuprintf(...) do { if (verbose > 1) _uprintf(__VA_ARGS__); } while(0)
 #define suprintf(...) do { if (!bSilent) _uprintf(__VA_ARGS__); } while(0)
 #define uuprintf(...) do { if (usb_debug) _uprintf(__VA_ARGS__); } while(0)
-#define ubprintf(...) do { safe_sprintf(&ubuffer[ubuffer_pos], UBUFFER_SIZE - ubuffer_pos - 2, __VA_ARGS__); \
+#define ubprintf(...) do { safe_sprintf(&ubuffer[ubuffer_pos], UBUFFER_SIZE - ubuffer_pos - 4, __VA_ARGS__); \
 	ubuffer_pos = strlen(ubuffer); ubuffer[ubuffer_pos++] = '\r'; ubuffer[ubuffer_pos++] = '\n'; \
 	ubuffer[ubuffer_pos] = 0; } while(0)
 #define ubflush() do { if (ubuffer_pos) uprintf("%s", ubuffer); ubuffer_pos = 0; } while(0)
@@ -333,8 +333,8 @@ enum checksum_type {
 #define HAS_WINDOWS(r)      (HAS_BOOTMGR(r) || (r.uses_minint) || HAS_WINPE(r))
 #define HAS_WIN7_EFI(r)     ((r.has_efi == 1) && HAS_WININST(r))
 #define HAS_EFI_IMG(r)      (r.efi_img_path[0] != 0)
-#define IS_DD_BOOTABLE(r)   (r.is_bootable_img)
-#define IS_DD_ONLY(r)       (r.is_bootable_img && (!r.is_iso || r.disable_iso))
+#define IS_DD_BOOTABLE(r)   (r.is_bootable_img > 0)
+#define IS_DD_ONLY(r)       ((r.is_bootable_img > 0) && (!r.is_iso || r.disable_iso))
 #define IS_EFI_BOOTABLE(r)  (r.has_efi != 0)
 #define IS_BIOS_BOOTABLE(r) (HAS_BOOTMGR(r) || HAS_SYSLINUX(r) || HAS_WINPE(r) || HAS_GRUB(r) || HAS_REACTOS(r) || HAS_KOLIBRIOS(r))
 #define HAS_WINTOGO(r)      (HAS_BOOTMGR(r) && IS_EFI_BOOTABLE(r) && HAS_WININST(r))
@@ -363,7 +363,7 @@ typedef struct {
 	int64_t mismatch_size;
 	uint32_t wininst_version;
 	BOOLEAN is_iso;
-	uint8_t is_bootable_img;
+	int8_t is_bootable_img;
 	BOOLEAN is_vhd;
 	BOOLEAN is_windows_img;
 	BOOLEAN disable_iso;
@@ -389,7 +389,7 @@ typedef struct {
 	BOOLEAN has_kolibrios;
 	BOOLEAN uses_casper;
 	BOOLEAN uses_minint;
-	BOOLEAN compression_type;
+	uint8_t compression_type;
 	winver_t win_version;	// Windows ISO version
 	uint16_t sl_version;	// Syslinux/Isolinux version
 	char sl_version_str[12];
@@ -598,7 +598,7 @@ extern BOOL WimExtractFile_7z(const char* image, int index, const char* src, con
 extern BOOL WimApplyImage(const char* image, int index, const char* dst);
 extern char* WimMountImage(const char* image, int index);
 extern BOOL WimUnmountImage(const char* image, int index);
-extern uint8_t IsBootableImage(const char* path);
+extern int8_t IsBootableImage(const char* path);
 extern BOOL AppendVHDFooter(const char* vhd_path);
 extern int SetWinToGoIndex(void);
 extern int IsHDD(DWORD DriveIndex, uint16_t vid, uint16_t pid, const char* strid);

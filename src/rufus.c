@@ -36,6 +36,7 @@
 #include <io.h>
 #include <getopt.h>
 #include <assert.h>
+#include <delayimp.h>
 
 #include "rufus.h"
 #include "missing.h"
@@ -334,7 +335,7 @@ static void SetPartitionSchemeAndTargetSystem(BOOL only_target)
 			if (HAS_WINDOWS(img_report) && img_report.has_efi)
 				preferred_pt = allow_dual_uefi_bios? PARTITION_STYLE_MBR :
 					((selected_pt >= 0) ? selected_pt : PARTITION_STYLE_GPT);
-			if (img_report.is_bootable_img)
+			if (IS_DD_BOOTABLE(img_report))
 				preferred_pt = (selected_pt >= 0) ? selected_pt : PARTITION_STYLE_MBR;
 		}
 		SetComboEntry(hPartitionScheme, preferred_pt);
@@ -405,7 +406,8 @@ static BOOL IsRefsAvailable(MEDIA_TYPE MediaType)
 		return FALSE;
 	if (nWindowsVersion < WINDOWS_8_1 || nWindowsBuildNumber <= 0)
 		return FALSE;
-	if (nWindowsBuildNumber < 16000)
+	// Per https://gist.github.com/0xbadfca11/da0598e47dd643d933dc
+	if (nWindowsBuildNumber < 16226)
 		return TRUE;
 	switch (nWindowsEdition) {
 	case 0x0000000A: // Enterprise Server
@@ -751,9 +753,6 @@ static void EnableMBRBootOptions(BOOL enable, BOOL remove_checkboxes)
 			actual_enable_mbr = FALSE;
 			mbr_selected_by_user = FALSE;
 		}
-		if (boot_type == BT_NON_BOOTABLE) {
-			actual_enable_fix = FALSE;
-		}
 	}
 
 	if (remove_checkboxes) {
@@ -843,7 +842,7 @@ static void EnableBootOptions(BOOL enable, BOOL remove_checkboxes)
 		actual_enable = FALSE;
 	actual_enable_bb = actual_enable;
 	// If we are dealing with a pure DD image, remove all options except Bad Blocks check
-	if ((boot_type == BT_IMAGE) && (img_report.is_bootable_img) && (!img_report.is_iso))
+	if ((boot_type == BT_IMAGE) && IS_DD_BOOTABLE(img_report) && (!img_report.is_iso))
 		actual_enable = FALSE;
 
 	EnableWindow(hImageOption, actual_enable);
@@ -1006,7 +1005,7 @@ BOOL CALLBACK LogCallback(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
 			ShowWindow(hDlg, SW_HIDE);
 			log_displayed = FALSE;
 			// Set focus to the Cancel button on the main dialog
-			// This avoids intempestive tooltip display from the log toolbar buttom
+			// This avoids intempestive tooltip display from the log toolbar button
 			SendMessage(hMainDialog, WM_NEXTDLGCTL, (WPARAM)GetDlgItem(hMainDialog, IDCANCEL), TRUE);
 			return TRUE;
 		case IDC_LOG_CLEAR:
@@ -1036,7 +1035,7 @@ BOOL CALLBACK LogCallback(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
 		reset_localization(IDD_LOG);
 		log_displayed = FALSE;
 		// Set focus to the Cancel button on the main dialog
-		// This avoids intempestive tooltip display from the log toolbar buttom
+		// This avoids intempestive tooltip display from the log toolbar button
 		SendMessage(hMainDialog, WM_NEXTDLGCTL, (WPARAM)GetDlgItem(hMainDialog, IDCANCEL), TRUE);
 		return TRUE;
 	case UM_RESIZE_BUTTONS:
@@ -1135,6 +1134,7 @@ static void DisplayISOProps(void)
 	PRINT_ISO_PROP(HAS_WINPE(img_report), "  Uses: WinPE %s", (img_report.uses_minint) ? "(with /minint)" : "");
 	if (HAS_WININST(img_report)) {
 		inst_str[4] = '0' + img_report.wininst_index;
+		assert(strlen(img_report.wininst_path[0]) >= 3);
 		uprintf("  Uses: Install.%s%s (version %d.%d.%d%s)", &img_report.wininst_path[0][strlen(img_report.wininst_path[0]) - 3],
 			(img_report.wininst_index > 1) ? inst_str : "", (img_report.wininst_version >> 24) & 0xff,
 			(img_report.wininst_version >> 16) & 0xff, (img_report.wininst_version >> 8) & 0xff,
@@ -1263,7 +1263,7 @@ DWORD WINAPI ImageScanThread(LPVOID param)
 	const char* redhat8_derivative[] = {
 		"^AlmaLinux-8.*",		// AlmaLinux 8.x
 		"^Fedora.*-3[3-9].*",	// Fedora 33-39
-		"^CentOS-8.*",			// CentOS 8.x
+		"^CentOS.*-8.*",		// CentOS and CentOS Stream 8.x
 		"^OL-8.*",				// Oracle Linux 8.x
 		"^RHEL-8.*",			// Red Hat 8.x
 		"^Rocky-8.*",			// Rocky Linux 8.x
@@ -1285,17 +1285,20 @@ DWORD WINAPI ImageScanThread(LPVOID param)
 
 	if ((FormatStatus == (ERROR_SEVERITY_ERROR | FAC(FACILITY_STORAGE) | ERROR_CANCELLED)) ||
 		(img_report.image_size == 0) ||
-		(!img_report.is_iso && !img_report.is_bootable_img && !img_report.is_windows_img)) {
+		(!img_report.is_iso && (img_report.is_bootable_img <= 0) && !img_report.is_windows_img)) {
 		// Failed to scan image
 		SendMessage(hMainDialog, UM_PROGRESS_EXIT, 0, 0);
-		safe_free(image_path);
 		UpdateImage(FALSE);
 		SetMBRProps();
 		PopulateProperties();
 		PrintInfoDebug(0, MSG_203);
 		PrintStatus(0, MSG_203);
 		EnableControls(TRUE, FALSE);
-		MessageBoxExU(hMainDialog, lmprintf(MSG_082), lmprintf(MSG_081), MB_OK | MB_ICONINFORMATION | MB_IS_RTL, selected_langid);
+		if (img_report.is_bootable_img < 0)
+			MessageBoxExU(hMainDialog, lmprintf(MSG_325, image_path), lmprintf(MSG_042), MB_OK | MB_ICONERROR | MB_IS_RTL, selected_langid);
+		else
+			MessageBoxExU(hMainDialog, lmprintf(MSG_082), lmprintf(MSG_081), MB_OK | MB_ICONINFORMATION | MB_IS_RTL, selected_langid);
+		safe_free(image_path);
 		goto out;
 	}
 
@@ -1318,7 +1321,7 @@ DWORD WINAPI ImageScanThread(LPVOID param)
 			DeleteFileU(tmp_path);
 		}
 		uprintf("  Image is %sa UEFI bootable Windows installation image", img_report.has_efi ? "" : "NOT ");
-	} else if (img_report.is_bootable_img) {
+	} else if (IS_DD_BOOTABLE(img_report)) {
 		if (img_report.is_bootable_img == 2)
 			uprintf("  Image is a FORCED non-bootable image");
 		else
@@ -2218,6 +2221,7 @@ static INT_PTR CALLBACK MainCallback(HWND hDlg, UINT message, WPARAM wParam, LPA
 	static SHChangeNotifyEntry NotifyEntry;
 	static DWORD_PTR thread_affinity[CHECKSUM_MAX + 1];
 	static HFONT hyperlink_font = NULL;
+	static wchar_t wtooltip[128];
 	LONG lPos;
 	BOOL set_selected_fs;
 	DRAWITEMSTRUCT* pDI;
@@ -2234,7 +2238,6 @@ static INT_PTR CALLBACK MainCallback(HWND hDlg, UINT message, WPARAM wParam, LPA
 	char tmp[MAX_PATH], *log_buffer = NULL;
 	wchar_t* wbuffer = NULL;
 	loc_cmd* lcmd = NULL;
-	wchar_t wtooltip[128];
 
 	switch (message) {
 
@@ -3193,6 +3196,23 @@ static HANDLE SetHogger(void)
 	return hogmutex;
 }
 
+// For delay-loaded DLLs, use LOAD_LIBRARY_SEARCH_SYSTEM32 to avoid DLL search order hijacking.
+FARPROC WINAPI dllDelayLoadHook(unsigned dliNotify, PDelayLoadInfo pdli)
+{
+	if (dliNotify == dliNotePreLoadLibrary) {
+		// Windows 7 without KB2533623 does not support the LOAD_LIBRARY_SEARCH_SYSTEM32 flag.
+		// That is is OK, because the delay load handler will interrupt the NULL return value
+		// to mean that it should perform a normal LoadLibrary.
+		return (FARPROC)LoadLibraryExA(pdli->szDll, NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
+	}
+	return NULL;
+}
+
+#if defined(_MSC_VER)
+// By default the Windows SDK headers have a `const` while MinGW does not.
+const
+#endif
+PfnDliHook __pfnDliNotifyHook2 = dllDelayLoadHook;
 
 /*
  * Application Entrypoint
@@ -3204,7 +3224,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 #endif
 {
 	const char* rufus_loc = "rufus.loc";
-	wchar_t kernel32_path[MAX_PATH];
 	int i, opt, option_index = 0, argc = 0, si = 0, lcid = GetUserDefaultUILanguage();
 	int wait_for_mutex = 0;
 	FILE* fd;
@@ -3240,22 +3259,18 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 	// Still, we invoke it, for platforms where the following call might actually work...
 	SetDllDirectoryA("");
 
-	// Also, even if you use SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32), you're
-	// still going to be brought down if you link to wininet.lib or dwmapi.lib, as these two
-	// perform their DLL invocations before you've had a chance to execute anything.
-	// Of course, this is not something that security "researchers" will bother looking into
-	// to try to help fellow developers, when they can get an ego fix by simply throwing
-	// generic URLs around and deliberately refusing to practice *responsible disclosure*...
+	// For libraries on the KnownDLLs list, the system will always load them from System32.
+	// For other DLLs we link directly to, we can delay load the DLL and use a delay load
+	// hook to load them from System32. Note that, for this to work, something like:
+	// 'somelib.dll;%(DelayLoadDLLs)' must be added to the 'Delay Loaded Dlls' option of
+	// the linker properties in Visual Studio (which means this won't work with MinGW).
+	// For all other DLLs, use SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32).
 	// Finally, we need to perform the whole gymkhana below, where we can't call on
 	// SetDefaultDllDirectories() directly, because Windows 7 doesn't have the API exposed.
-	GetSystemDirectoryW(kernel32_path, ARRAYSIZE(kernel32_path));
-	wcsncat(kernel32_path, L"\\kernel32.dll", ARRAYSIZE(kernel32_path) - wcslen(kernel32_path) - 1);
-	// NB: Because kernel32 should already be loaded, what we do above to ensure that we
-	// (re)pick the system one is mostly unnecessary. But since for a hammer everything is a
-	// nail... Also, no, Coverity, we never need to care about freeing kernel32 as a library.
+	// Also, no, Coverity, we never need to care about freeing kernel32 as a library.
 	// coverity[leaked_storage]
 	pfSetDefaultDllDirectories = (SetDefaultDllDirectories_t)
-		GetProcAddress(LoadLibraryW(kernel32_path), "SetDefaultDllDirectories");
+		GetProcAddress(LoadLibraryW(L"kernel32.dll"), "SetDefaultDllDirectories");
 	if (pfSetDefaultDllDirectories != NULL)
 		pfSetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32);
 
@@ -3972,7 +3987,7 @@ relaunch:
 		}
 
 		// Standalone 'Alt' key toggles progress report between percent, rate (if available)
-		// and remaining time (if availabe)
+		// and remaining time (if available)
 		if (alt_pressed && !(GetKeyState(VK_MENU) & 0x8000)) {
 			alt_pressed = FALSE;
 			if (!alt_command)

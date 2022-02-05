@@ -180,7 +180,7 @@ static BOOL check_iso_props(const char* psz_dirname, int64_t file_length, const 
 
 	// Check for archiso loader/entries/*.conf files
 	if (safe_stricmp(psz_dirname, "/loader/entries") == 0) {
-		len = strlen(psz_basename);
+		len = safe_strlen(psz_basename);
 		props->is_conf = ((len > 4) && (stricmp(&psz_basename[len - 5], ".conf") == 0));
 	}
 
@@ -858,12 +858,18 @@ void GetGrubVersion(char* buf, size_t buf_size)
 		img_report.grub2_version[0] = 0;
 }
 
+// Linking to version.lib would result in DLL sideloading issues, so we don't
+// See https://github.com/pbatard/rufus/pull/1838
+PF_TYPE_DECL(WINAPI, DWORD, GetFileVersionInfoSizeW, (LPCWSTR, LPDWORD));
+PF_TYPE_DECL(WINAPI, BOOL, GetFileVersionInfoW, (LPCWSTR, DWORD, DWORD, LPVOID));
+PF_TYPE_DECL(WINAPI, BOOL, VerQueryValueA, (LPCVOID, LPCSTR, LPVOID, PUINT));
+
 BOOL ExtractISO(const char* src_iso, const char* dest_dir, BOOL scan)
 {
 	size_t i, j, size, sl_index = 0;
 	uint16_t sl_version;
 	FILE* fd;
-	int r = 1;
+	int k, r = 1;
 	iso9660_t* p_iso = NULL;
 	iso9660_pvd_t pvd;
 	udf_t* p_udf = NULL;
@@ -877,6 +883,10 @@ BOOL ExtractISO(const char* src_iso, const char* dest_dir, BOOL scan)
 
 	if ((!enable_iso) || (src_iso == NULL) || (dest_dir == NULL))
 		return FALSE;
+
+	PF_INIT_OR_OUT(GetFileVersionInfoSizeW, Version);
+	PF_INIT_OR_OUT(GetFileVersionInfoW, Version);
+	PF_INIT_OR_OUT(VerQueryValueA, Version);
 
 	scan_only = scan;
 	if (!scan_only)
@@ -969,8 +979,8 @@ out:
 		if ((iso9660_ifs_read_pvd(p_iso, &pvd)) && (_stat64U(src_iso, &stat) == 0))
 			img_report.mismatch_size = (int64_t)(iso9660_get_pvd_space_size(&pvd)) * ISO_BLOCKSIZE - stat.st_size;
 		// Remove trailing spaces from the label
-		for (j=safe_strlen(img_report.label)-1; ((j>0)&&(isspaceU(img_report.label[j]))); j--)
-			img_report.label[j] = 0;
+		for (k=(int)safe_strlen(img_report.label)-1; ((k>0)&&(isspaceU(img_report.label[k]))); k--)
+			img_report.label[k] = 0;
 		// We use the fact that UDF_BLOCKSIZE and ISO_BLOCKSIZE are the same here
 		img_report.projected_size = total_blocks * ISO_BLOCKSIZE;
 		// We will link the existing isolinux.cfg from a syslinux.cfg we create
@@ -1113,14 +1123,19 @@ out:
 			VS_FIXEDFILEINFO* ver_info = NULL;
 			DWORD ver_handle = 0, ver_size;
 			UINT value_len = 0;
+			assert(pfGetFileVersionInfoSizeW != NULL);
+			assert(pfGetFileVersionInfoW != NULL);
+			assert(pfVerQueryValueA != NULL);
 			// coverity[swapped_arguments]
 			if (GetTempFileNameU(temp_dir, APPLICATION_NAME, 0, path) != 0) {
+				wconvert(path);
+				assert(wpath != NULL);
 				size = (size_t)ExtractISOFile(src_iso, "sources/compatresources.dll", path, FILE_ATTRIBUTE_NORMAL);
-				ver_size = GetFileVersionInfoSizeU(path, &ver_handle);
+				ver_size = pfGetFileVersionInfoSizeW(wpath, &ver_handle);
 				if (ver_size != 0) {
 					buf = malloc(ver_size);
-					if ((buf != NULL) && GetFileVersionInfoU(path, ver_handle, ver_size, buf) &&
-						VerQueryValueA(buf, "\\", (LPVOID)&ver_info, &value_len) && (value_len != 0)) {
+					if ((buf != NULL) && pfGetFileVersionInfoW(wpath, ver_handle, ver_size, buf) &&
+						pfVerQueryValueA(buf, "\\", (LPVOID)&ver_info, &value_len) && (value_len != 0)) {
 						if (ver_info->dwSignature == VS_FFI_SIGNATURE) {
 							img_report.win_version.major = HIWORD(ver_info->dwFileVersionMS);
 							img_report.win_version.minor = LOWORD(ver_info->dwFileVersionMS);
@@ -1132,7 +1147,8 @@ out:
 					}
 					free(buf);
 				}
-				DeleteFileU(path);
+				DeleteFileW(wpath);
+				free(wpath);
 			}
 		}
 		StrArrayDestroy(&config_path);
@@ -1437,7 +1453,7 @@ BOOL HasEfiImgBootLoaders(void)
 	p_private->p_iso = p_iso;
 	p_private->lsn = p_statbuf->lsn;
 	p_private->sec_start = 0;
-	// Populate our intial buffer
+	// Populate our initial buffer
 	if (iso9660_iso_seek_read(p_private->p_iso, p_private->buf, p_private->lsn, ISO_NB_BLOCKS) != ISO_NB_BLOCKS * ISO_BLOCKSIZE) {
 		uprintf("Error reading ISO-9660 file %s at LSN %lu\n", img_report.efi_img_path, (long unsigned int)p_private->lsn);
 		goto out;
@@ -1528,7 +1544,7 @@ BOOL DumpFatDir(const char* path, int32_t cluster)
 		p_private->p_iso = p_iso;
 		p_private->lsn = p_statbuf->lsn;
 		p_private->sec_start = 0;
-		// Populate our intial buffer
+		// Populate our initial buffer
 		if (iso9660_iso_seek_read(p_private->p_iso, p_private->buf, p_private->lsn, ISO_NB_BLOCKS) != ISO_NB_BLOCKS * ISO_BLOCKSIZE) {
 			uprintf("Error reading ISO-9660 file %s at LSN %lu\n", img_report.efi_img_path, (long unsigned int)p_private->lsn);
 			goto out;
