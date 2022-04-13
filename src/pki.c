@@ -1,7 +1,7 @@
 /*
  * Rufus: The Reliable USB Formatting Utility
  * PKI functions (code signing, etc.)
- * Copyright © 2015-2016 Pete Batard <pete@akeo.ie>
+ * Copyright © 2015-2022 Pete Batard <pete@akeo.ie>
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -572,7 +572,7 @@ out:
 // From https://msdn.microsoft.com/en-us/library/windows/desktop/aa382384.aspx
 LONG ValidateSignature(HWND hDlg, const char* path)
 {
-	LONG r;
+	LONG r = TRUST_E_SYSTEM_ERROR;
 	WINTRUST_DATA trust_data = { 0 };
 	WINTRUST_FILE_INFO trust_file = { 0 };
 	GUID guid_generic_verify =	// WINTRUST_ACTION_GENERIC_VERIFY_V2
@@ -625,6 +625,8 @@ LONG ValidateSignature(HWND hDlg, const char* path)
 	trust_data.dwUnionChoice = WTD_CHOICE_FILE;
 	trust_data.pFile = &trust_file;
 
+	// NB: Calling this API will create DLL sideloading issues through 'msasn1.dll'.
+	// So make sure you delay-load 'wintrust.dll' in your application.
 	r = WinVerifyTrustEx(INVALID_HANDLE_VALUE, &guid_generic_verify, &trust_data);
 	safe_free(trust_file.pcwszFilePath);
 	switch (r) {

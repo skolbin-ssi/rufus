@@ -1168,7 +1168,8 @@ static void UpdateImage(BOOL update_image_option_only)
 	ComboBox_ResetContent(hImageOption);
 
 	if (!img_report.is_windows_img) {	// Straight install.wim/install.esd only have Windows To Go option
-		if (img_report.win_version.major == 11) {
+		// Can't remove restrictions if running on Windows 7 or when running the appstore version
+		if (nWindowsVersion >= WINDOWS_8 && !appstore_version && img_report.win_version.major == 11) {
 			IGNORE_RETVAL(ComboBox_SetItemData(hImageOption, ComboBox_AddStringU(hImageOption, lmprintf(MSG_322)), IMOP_WIN_STANDARD));
 			IGNORE_RETVAL(ComboBox_SetItemData(hImageOption, ComboBox_AddStringU(hImageOption, lmprintf(MSG_323)), IMOP_WIN_EXTENDED));
 		} else {
@@ -1267,6 +1268,7 @@ DWORD WINAPI ImageScanThread(LPVOID param)
 		"^OL-8.*",				// Oracle Linux 8.x
 		"^RHEL-8.*",			// Red Hat 8.x
 		"^Rocky-8.*",			// Rocky Linux 8.x
+		"^MIRACLE-LINUX-8-.*",	// MIRACLE LINUX 8.x
 	};
 	int i, len;
 	uint8_t arch;
@@ -2330,9 +2332,6 @@ static INT_PTR CALLBACK MainCallback(HWND hDlg, UINT message, WPARAM wParam, LPA
 		case IDC_LOG:
 			// Place the log Window to the right (or left for RTL) of our dialog on first display
 			if (first_log_display) {
-				// Can't link to dwmapi.lib since it sideloads dwapi.dll *before* we get a chance
-				// to prevent local directory lookup (Sideloading mitigation).
-				PF_TYPE_DECL(WINAPI, HRESULT, DwmGetWindowAttribute, (HWND, DWORD, PVOID, DWORD));
 				GetClientRect(GetDesktopWindow(), &DesktopRect);
 				GetWindowRect(hLogDialog, &DialogRect);
 				nWidth = DialogRect.right - DialogRect.left;
@@ -2340,14 +2339,13 @@ static INT_PTR CALLBACK MainCallback(HWND hDlg, UINT message, WPARAM wParam, LPA
 				GetWindowRect(hDlg, &DialogRect);
 				offset = GetSystemMetrics(SM_CXBORDER);
 				if (nWindowsVersion >= WINDOWS_10) {
-					PF_INIT(DwmGetWindowAttribute, Dwmapi);
 					// See https://stackoverflow.com/a/42491227/1069307
 					// I agree with Stephen Hazel: Whoever at Microsoft thought it would be a great idea to
 					// add a *FRIGGING INVISIBLE BORDER* in Windows 10 should face the harshest punishment!
-					if (pfDwmGetWindowAttribute != NULL) {
-						pfDwmGetWindowAttribute(hDlg, DWMWA_EXTENDED_FRAME_BOUNDS, &rc, sizeof(RECT));
-						offset += 2 * (DialogRect.left - rc.left);
-					}
+					// Also calling this API will create DLL sideloading issues through 'dwmapi.dll' so make
+					// sure you delay-load it in your application.
+					DwmGetWindowAttribute(hDlg, DWMWA_EXTENDED_FRAME_BOUNDS, &rc, sizeof(RECT));
+					offset += 2 * (DialogRect.left - rc.left);
 				}
 				if (right_to_left_mode)
 					Point.x = max(DialogRect.left - offset - nWidth, 0);
