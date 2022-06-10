@@ -128,7 +128,7 @@
       <CompileAs>CompileAsC</CompileAs>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <ExceptionHandling>false</ExceptionHandling>
-      <DisableSpecificWarnings>4091;28251;28252;28253;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+      <DisableSpecificWarnings>4091;5255;28251;28252;28253;%(DisableSpecificWarnings)</DisableSpecificWarnings>
       <Optimization>Disabled</Optimization>
       <AdditionalOptions>/utf-8 $(ExternalCompilerOptions) %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
@@ -154,7 +154,7 @@
       <CompileAs>CompileAsC</CompileAs>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <ExceptionHandling>false</ExceptionHandling>
-      <DisableSpecificWarnings>4091;28251;28252;28253;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+      <DisableSpecificWarnings>4091;5255;28251;28252;28253;%(DisableSpecificWarnings)</DisableSpecificWarnings>
       <AdditionalOptions>/utf-8 $(ExternalCompilerOptions) %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
@@ -181,7 +181,7 @@
       <CompileAs>CompileAsC</CompileAs>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <ExceptionHandling>false</ExceptionHandling>
-      <DisableSpecificWarnings>4091;28251;28252;28253;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+      <DisableSpecificWarnings>4091;5255;28251;28252;28253;%(DisableSpecificWarnings)</DisableSpecificWarnings>
       <AdditionalOptions>/utf-8 $(ExternalCompilerOptions) %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
@@ -212,17 +212,17 @@
       <CompileAs>CompileAsC</CompileAs>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <ExceptionHandling>false</ExceptionHandling>
-      <DisableSpecificWarnings>4091;28251;28252;28253;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+      <DisableSpecificWarnings>4091;5255;28251;28252;28253;%(DisableSpecificWarnings)</DisableSpecificWarnings>
       <Optimization>Disabled</Optimization>
       <AdditionalOptions>/utf-8 $(ExternalCompilerOptions) %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
-      <AdditionalDependencies>advapi32.lib;comctl32.lib;comdlg32.lib;crypt32.lib;gdi32.lib;ole32.lib;dwmapi.lib;setupapi.lib;shell32.lib;shlwapi.lib;wintrust.lib;version.lib;wininet.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>advapi32.lib;comctl32.lib;comdlg32.lib;crypt32.lib;gdi32.lib;ole32.lib;dwmapi.lib;setupapi.lib;shell32.lib;shlwapi.lib;wintrust.lib;version.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <UACExecutionLevel>RequireAdministrator</UACExecutionLevel>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <SubSystem>Windows</SubSystem>
       <TargetMachine>MachineX64</TargetMachine>
-      <DelayLoadDLLs>advapi32.dll;comctl32.dll;comdlg32.dll;crypt32.dll;gdi32.dll;ole32.dll;dwmapi.dll;setupapi.dll;shell32.dll;shlwapi.dll;wintrust.dll;version.dll;wininet.dll;%(DelayLoadDLLs)</DelayLoadDLLs>
+      <DelayLoadDLLs>advapi32.dll;comctl32.dll;comdlg32.dll;crypt32.dll;gdi32.dll;ole32.dll;dwmapi.dll;setupapi.dll;shell32.dll;shlwapi.dll;wintrust.dll;version.dll;%(DelayLoadDLLs)</DelayLoadDLLs>
     </Link>
     <ResourceCompile>
       <PreprocessorDefinitions>_UNICODE;UNICODE;RUFUS_LOC;%(PreprocessorDefinitions)</PreprocessorDefinitions>
@@ -238,7 +238,7 @@
       <CompileAs>CompileAsC</CompileAs>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <ExceptionHandling>false</ExceptionHandling>
-      <DisableSpecificWarnings>4091;28251;28252;28253;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+      <DisableSpecificWarnings>4091;5255;28251;28252;28253;%(DisableSpecificWarnings)</DisableSpecificWarnings>
       <UndefinePreprocessorDefinitions>NDEBUG</UndefinePreprocessorDefinitions>
       <AdditionalOptions>/utf-8 $(ExternalCompilerOptions) %(AdditionalOptions)</AdditionalOptions>
       <StringPooling>true</StringPooling>
@@ -266,7 +266,7 @@
       <CompileAs>CompileAsC</CompileAs>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <ExceptionHandling>false</ExceptionHandling>
-      <DisableSpecificWarnings>4091;28251;28252;28253;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+      <DisableSpecificWarnings>4091;5255;28251;28252;28253;%(DisableSpecificWarnings)</DisableSpecificWarnings>
       <UndefinePreprocessorDefinitions>NDEBUG</UndefinePreprocessorDefinitions>
       <AdditionalOptions>/utf-8 $(ExternalCompilerOptions) %(AdditionalOptions)</AdditionalOptions>
       <StringPooling>true</StringPooling>
@@ -296,7 +296,7 @@
       <CompileAs>CompileAsC</CompileAs>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <ExceptionHandling>false</ExceptionHandling>
-      <DisableSpecificWarnings>4091;28251;28252;28253;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+      <DisableSpecificWarnings>4091;5255;28251;28252;28253;%(DisableSpecificWarnings)</DisableSpecificWarnings>
       <UndefinePreprocessorDefinitions>NDEBUG</UndefinePreprocessorDefinitions>
       <AdditionalOptions>/utf-8 $(ExternalCompilerOptions) %(AdditionalOptions)</AdditionalOptions>
       <StringPooling>true</StringPooling>
@@ -329,19 +329,19 @@
       <CompileAs>CompileAsC</CompileAs>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <ExceptionHandling>false</ExceptionHandling>
-      <DisableSpecificWarnings>4091;28251;28252;28253;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+      <DisableSpecificWarnings>4091;5255;28251;28252;28253;%(DisableSpecificWarnings)</DisableSpecificWarnings>
       <UndefinePreprocessorDefinitions>NDEBUG</UndefinePreprocessorDefinitions>
       <AdditionalOptions>/utf-8 $(ExternalCompilerOptions) %(AdditionalOptions)</AdditionalOptions>
       <StringPooling>true</StringPooling>
     </ClCompile>
     <Link>
-      <AdditionalDependencies>advapi32.lib;comctl32.lib;comdlg32.lib;crypt32.lib;gdi32.lib;ole32.lib;dwmapi.lib;setupapi.lib;shell32.lib;shlwapi.lib;wintrust.lib;version.lib;wininet.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>advapi32.lib;comctl32.lib;comdlg32.lib;crypt32.lib;gdi32.lib;ole32.lib;dwmapi.lib;setupapi.lib;shell32.lib;shlwapi.lib;wintrust.lib;version.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <UACExecutionLevel>RequireAdministrator</UACExecutionLevel>
       <GenerateDebugInformation>false</GenerateDebugInformation>
       <SubSystem>Windows</SubSystem>
       <TargetMachine>MachineX64</TargetMachine>
       <AdditionalOptions>/BREPRO %(AdditionalOptions)</AdditionalOptions>
-      <DelayLoadDLLs>advapi32.dll;comctl32.dll;comdlg32.dll;crypt32.dll;gdi32.dll;ole32.dll;dwmapi.dll;setupapi.dll;shell32.dll;shlwapi.dll;wintrust.dll;version.dll;wininet.dll;%(DelayLoadDLLs)</DelayLoadDLLs>
+      <DelayLoadDLLs>advapi32.dll;comctl32.dll;comdlg32.dll;crypt32.dll;gdi32.dll;ole32.dll;dwmapi.dll;setupapi.dll;shell32.dll;shlwapi.dll;wintrust.dll;version.dll;%(DelayLoadDLLs)</DelayLoadDLLs>
     </Link>
     <ResourceCompile>
       <PreprocessorDefinitions>_UNICODE;UNICODE;RUFUS_LOC;%(PreprocessorDefinitions)</PreprocessorDefinitions>
