@@ -1,7 +1,7 @@
 /*
  * Rufus: The Reliable USB Formatting Utility
  * Virtual Disk Handling functions
- * Copyright © 2013-2016 Pete Batard <pete@akeo.ie>
+ * Copyright © 2013-2022 Pete Batard <pete@akeo.ie>
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -167,8 +167,8 @@ static int _index, progress_op = OP_FILE_COPY, progress_msg = MSG_267;
 
 static BOOL Get7ZipPath(void)
 {
-	if ( (GetRegistryKeyStr(REGKEY_HKCU, "7-Zip\\Path", sevenzip_path, sizeof(sevenzip_path)))
-	  || (GetRegistryKeyStr(REGKEY_HKLM, "7-Zip\\Path", sevenzip_path, sizeof(sevenzip_path))) ) {
+	if ( (GetRegistryKeyStr(REGKEY_HKCU, "Software\\7-Zip\\Path", sevenzip_path, sizeof(sevenzip_path)))
+	  || (GetRegistryKeyStr(REGKEY_HKLM, "Software\\7-Zip\\Path", sevenzip_path, sizeof(sevenzip_path))) ) {
 		static_strcat(sevenzip_path, "\\7z.exe");
 		return (_accessU(sevenzip_path, 0) != -1);
 	}
@@ -521,11 +521,15 @@ static DWORD WINAPI WimMountImageThread(LPVOID param)
 
 	PF_INIT_OR_OUT(WIMRegisterMessageCallback, Wimgapi);
 	PF_INIT_OR_OUT(WIMMountImage, Wimgapi);
+	PF_INIT_OR_OUT(WIMUnmountImage, Wimgapi);
 	PF_INIT_OR_OUT(WIMUnregisterMessageCallback, Wimgapi);
 
 	if (wmount_path[0] != 0) {
-		uprintf("WimMountImage: An image is already mounted");
-		goto out;
+		uprintf("WimMountImage: An image is already mounted. Trying to unmount it...");
+		if (pfWIMUnmountImage(wmount_path, wimage, _index, FALSE))
+			uprintf("WimMountImage: Successfully unmounted existing image..");
+		else
+			goto out;
 	}
 	if (GetTempFileNameW(wtemp_dir, L"Ruf", 0, wmount_path) == 0) {
 		uprintf("WimMountImage: Can not generate mount directory: %s", WindowsErrorString());
@@ -548,7 +552,7 @@ static DWORD WINAPI WimMountImageThread(LPVOID param)
 
 	progress_report_mask = WIM_REPORT_PROGRESS;
 	progress_op = OP_PATCH;
-	progress_msg = MSG_324;
+	progress_msg = MSG_325;
 	progress_offset = 1;
 	progress_total = PATCH_PROGRESS_TOTAL;
 	if (pfWIMRegisterMessageCallback(NULL, (FARPROC)WimProgressCallback, NULL) == INVALID_CALLBACK_VALUE) {
@@ -565,6 +569,16 @@ static DWORD WINAPI WimMountImageThread(LPVOID param)
 	uprintf("mounted '%S [%d]' on '%S'", wimage, _index, wmount_path);
 
 out:
+	if (!r) {
+		if (wmount_track[0] != 0) {
+			RemoveDirectoryW(wmount_track);
+			wmount_track[0] = 0;
+		}
+		if (wmount_path[0] != 0) {
+			RemoveDirectoryW(wmount_path);
+			wmount_path[0] = 0;
+		}
+	}
 	wfree(temp_dir);
 	safe_free(wimage);
 	ExitThread((DWORD)r);
@@ -607,7 +621,7 @@ static DWORD WINAPI WimUnmountImageThread(LPVOID param)
 
 	progress_report_mask = WIM_REPORT_PROGRESS;
 	progress_op = OP_PATCH;
-	progress_msg = MSG_324;
+	progress_msg = MSG_325;
 	progress_offset = 105;
 	progress_total = PATCH_PROGRESS_TOTAL;
 	if (pfWIMRegisterMessageCallback(NULL, (FARPROC)WimProgressCallback, NULL) == INVALID_CALLBACK_VALUE) {
