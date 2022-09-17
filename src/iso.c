@@ -465,7 +465,7 @@ static LPFILETIME __inline to_filetime(time_t t)
 {
 	static int i = 0;
 	static FILETIME ft[3], *r;
-	LONGLONG ll = Int32x32To64(t, 10000000) + 116444736000000000;
+	LONGLONG ll = (t * 10000000LL) + 116444736000000000LL;
 
 	r = &ft[i];
 	r->dwLowDateTime = (DWORD)ll;
@@ -1149,13 +1149,15 @@ out:
 				// very end the file to patch the damn thing and get on with our life!
 				uprintf("  Detected Grub version: %s%s", img_report.grub2_version,
 					img_report.has_grub2 > 1 ? " with NONSTANDARD prefix" : "");
-				for (k = 0; k < ARRAYSIZE(grub_patch); k++) {
-					if (strcmp(img_report.grub2_version, grub_patch[k].version) == 0)
-						break;
-				}
-				if (k >= ARRAYSIZE(grub_patch)) {
-					uprintf("  • Don't have a prefix patch for this version => DROPPED!");
-					img_report.has_grub2 = 0;
+				if (img_report.has_grub2 > 1) {
+					for (k = 0; k < ARRAYSIZE(grub_patch); k++) {
+						if (strcmp(img_report.grub2_version, grub_patch[k].version) == 0)
+							break;
+					}
+					if (k >= ARRAYSIZE(grub_patch)) {
+						uprintf("  • Don't have a prefix patch for this version => DROPPED!");
+						img_report.has_grub2 = 0;
+					}
 				}
 			} else {
 				uprintf("  Could not detect Grub version");
