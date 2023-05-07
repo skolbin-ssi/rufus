@@ -736,7 +736,7 @@ static BOOL ClearMBRGPT(HANDLE hPhysicalDrive, LONGLONG DiskSize, DWORD SectorSi
 	if (num_sectors_to_clear < 4)
 		num_sectors_to_clear = (DWORD)((add1MB ? 2048 : 0) + MAX_SECTORS_TO_CLEAR);
 
-	uprintf("Erasing %d sectors", num_sectors_to_clear);
+	uprintf("Erasing %llu sectors", num_sectors_to_clear);
 	pZeroBuf = calloc(SectorSize, (size_t)num_sectors_to_clear);
 	if (pZeroBuf == NULL) {
 		FormatStatus = ERROR_SEVERITY_ERROR | FAC(FACILITY_STORAGE) | ERROR_NOT_ENOUGH_MEMORY;
@@ -1290,7 +1290,7 @@ static BOOL WriteDrive(HANDLE hPhysicalDrive, BOOL bZeroDrive)
 		}
 		assert((uintptr_t)sec_buf % SelectedDrive.SectorSize == 0);
 		sec_buf_pos = 0;
-		bled_init(_uprintf, NULL, sector_write, update_progress, NULL, &FormatStatus);
+		bled_init(uprintf, NULL, sector_write, update_progress, NULL, &FormatStatus);
 		bled_ret = bled_uncompress_with_handles(hSourceImage, hPhysicalDrive, img_report.compression_type);
 		bled_exit();
 		uprintfs("\r\n");
@@ -1408,7 +1408,7 @@ out:
 
 /*
  * Standalone thread for the formatting operation
- * According to http://msdn.microsoft.com/en-us/library/windows/desktop/aa364562.aspx
+ * According to https://learn.microsoft.com/windows/win32/api/winioctl/ni-winioctl-fsctl_dismount_volume
  * To change a volume file system
  *   Open a volume.
  *   Lock the volume.
@@ -1423,12 +1423,11 @@ DWORD WINAPI FormatThread(void* param)
 	BOOL ret, use_large_fat32, windows_to_go, actual_lock_drive = lock_drive, write_as_ext = FALSE;
 	// Windows 11 and VDS (which I suspect is what fmifs.dll's FormatEx() is now calling behind the scenes)
 	// require us to unlock the physical drive to format the drive, else access denied is returned.
-	BOOL need_logical = FALSE, must_unlock_physical = (use_vds || nWindowsVersion >= WINDOWS_11);
+	BOOL need_logical = FALSE, must_unlock_physical = (use_vds || WindowsVersion.Version >= WINDOWS_11);
 	DWORD cr, DriveIndex = (DWORD)(uintptr_t)param, ClusterSize, Flags;
 	HANDLE hPhysicalDrive = INVALID_HANDLE_VALUE;
 	HANDLE hLogicalVolume = INVALID_HANDLE_VALUE;
 	SYSTEMTIME lt;
-	FILE* log_fd;
 	uint8_t *buffer = NULL, extra_partitions = 0;
 	char *bb_msg, *volume_name = NULL;
 	char drive_name[] = "?:\\";
@@ -1463,7 +1462,7 @@ DWORD WINAPI FormatThread(void* param)
 		actual_lock_drive = FALSE;
 	// Windows 11 is a lot more proactive in locking ESPs and MSRs than previous versions
 	// were, meaning that we also can't lock the drive without incurring errors...
-	if ((nWindowsVersion >= WINDOWS_11) && extra_partitions)
+	if ((WindowsVersion.Version >= WINDOWS_11) && extra_partitions)
 		actual_lock_drive = FALSE;
 	// Fixed drives + ext2/ext3 don't play nice and require the same handling as ESPs
 	write_as_ext = IS_EXT(fs_type) && (GetDriveTypeFromIndex(DriveIndex) == DRIVE_FIXED);
@@ -1561,6 +1560,7 @@ DWORD WINAPI FormatThread(void* param)
 
 	if (IsChecked(IDC_BAD_BLOCKS)) {
 		do {
+			FILE* log_fd;
 			int sel = ComboBox_GetCurSel(hNBPasses);
 			// create a log file for bad blocks report. Since %USERPROFILE% may
 			// have localized characters, we use the UTF-8 API.
@@ -1573,7 +1573,8 @@ DWORD WINAPI FormatThread(void* param)
 				lt.wYear, lt.wMonth, lt.wDay, lt.wHour, lt.wMinute, lt.wSecond);
 			log_fd = fopenU(logfile, "w+");
 			if (log_fd == NULL) {
-				uprintf("Could not create log file for bad blocks check");
+				uprintf("Error: Could not create log file for bad blocks check");
+				goto out;
 			} else {
 				fprintf(log_fd, APPLICATION_NAME " bad blocks check started on: %04d.%02d.%02d %02d:%02d:%02d",
 				lt.wYear, lt.wMonth, lt.wDay, lt.wHour, lt.wMinute, lt.wSecond);

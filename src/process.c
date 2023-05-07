@@ -4,7 +4,7 @@
  *
  * Modified from Process Hacker:
  *   https://github.com/processhacker2/processhacker2/
- * Copyright © 2017-2021 Pete Batard <pete@akeo.ie>
+ * Copyright © 2017-2023 Pete Batard <pete@akeo.ie>
  * Copyright © 2017 dmex
  * Copyright © 2009-2016 wj32
  *
@@ -478,7 +478,14 @@ static DWORD WINAPI SearchProcessThread(LPVOID param)
 
 		// Update the current handle's process PID and compare against last
 		// Note: Be careful about not trying to overflow our list!
-		pid[cur_pid] = (handleInfo != NULL) ? handleInfo->UniqueProcessId : -1;
+		// Also, we are seeing reports of application crashes due to access
+		// violation exceptions here, so, since this is not critical code,
+		// we add an exception handler to ignore them.
+		TRY_AND_HANDLE(
+			EXCEPTION_ACCESS_VIOLATION,
+			{ pid[cur_pid] = (handleInfo != NULL) ? handleInfo->UniqueProcessId : -1; },
+			{ continue; }
+		);
 
 		if (pid[0] != pid[1]) {
 			cur_pid = (cur_pid + 1) % 2;
@@ -486,7 +493,8 @@ static DWORD WINAPI SearchProcessThread(LPVOID param)
 			// If we're switching process and found a match, print it
 			if (bFound) {
 				static_sprintf (tmp, "● [%06u] %s (%s)", (uint32_t)pid[cur_pid], cmdline, access_rights_str[access_rights & 0x7]);
-				vuprintf(tmp);
+				// tmp may contain a '%' so don't feed it as a naked format string
+				vuprintf("%s", tmp);
 				StrArrayAdd(&BlockingProcess, tmp, TRUE);
 				bFound = FALSE;
 				access_rights = 0;
@@ -610,7 +618,7 @@ static DWORD WINAPI SearchProcessThread(LPVOID param)
 		if (!bGotCmdLine)
 			bGotCmdLine = (GetModuleFileNameExU(processHandle, 0, cmdline, MAX_PATH - 1) != 0);
 
-		// The above may not work on Windows 7, so try QueryFullProcessImageName (Vista or later)
+		// The above may not work on all Windows version, so fall back to QueryFullProcessImageName
 		if (!bGotCmdLine) {
 			bGotCmdLine = (QueryFullProcessImageNameW(processHandle, 0, wexe_path, &size) != FALSE);
 			if (bGotCmdLine)
@@ -720,7 +728,7 @@ BOOL SearchProcessAlt(char* HandleName)
 		bFound = TRUE;
 		uprintf("WARNING: The following process(es) or service(s) are accessing %s:", HandleName);
 		for (i = 0; i < info->NumberOfProcessIdsInList; i++) {
-			uprintf("o Process with PID %ld", info->ProcessIdList[i]);
+			uprintf("o Process with PID %llu", (uint64_t)info->ProcessIdList[i]);
 		}
 	}
 

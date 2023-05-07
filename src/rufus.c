@@ -1,6 +1,6 @@
 /*
  * Rufus: The Reliable USB Formatting Utility
- * Copyright © 2011-2022 Pete Batard <pete@akeo.ie>
+ * Copyright © 2011-2023 Pete Batard <pete@akeo.ie>
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -121,7 +121,7 @@ DWORD MainThreadId;
 HWND hDeviceList, hPartitionScheme, hTargetSystem, hFileSystem, hClusterSize, hLabel, hBootType, hNBPasses, hLog = NULL;
 HWND hImageOption, hLogDialog = NULL, hProgress = NULL, hDiskID;
 HANDLE dialog_handle = NULL;
-BOOL is_x86_32, use_own_c32[NB_OLD_C32] = { FALSE, FALSE }, mbr_selected_by_user = FALSE, lock_drive = TRUE;
+BOOL is_x86_64, use_own_c32[NB_OLD_C32] = { FALSE, FALSE }, mbr_selected_by_user = FALSE, lock_drive = TRUE;
 BOOL op_in_progress = TRUE, right_to_left_mode = FALSE, has_uefi_csm = FALSE, its_a_me_mario = FALSE;
 BOOL enable_HDDs = FALSE, enable_VHDs = TRUE, enable_ntfs_compression = FALSE, no_confirmation_on_cancel = FALSE;
 BOOL advanced_mode_device, advanced_mode_format, allow_dual_uefi_bios, detect_fakes, enable_vmdk, force_large_fat32;
@@ -226,10 +226,10 @@ static void SetBootOptions(void)
 
 	IGNORE_RETVAL(ComboBox_ResetContent(hBootType));
 	IGNORE_RETVAL(ComboBox_SetItemData(hBootType, ComboBox_AddStringU(hBootType, lmprintf(MSG_279)), BT_NON_BOOTABLE));
-	if (nWindowsVersion < WINDOWS_10)	// The diskcopy.dll along with its MS-DOS floppy image was removed in Windows 10
+	if (WindowsVersion.Version < WINDOWS_10)	// The diskcopy.dll along with its MS-DOS floppy image was removed in Windows 10
 		IGNORE_RETVAL(ComboBox_SetItemData(hBootType, ComboBox_AddStringU(hBootType, "MS-DOS"), BT_MSDOS));
 	IGNORE_RETVAL(ComboBox_SetItemData(hBootType, ComboBox_AddStringU(hBootType, "FreeDOS"), BT_FREEDOS));
-	image_index = (nWindowsVersion < WINDOWS_10) ? 3 : 2;
+	image_index = (WindowsVersion.Version < WINDOWS_10) ? 3 : 2;
 	IGNORE_RETVAL(ComboBox_SetItemData(hBootType, ComboBox_AddStringU(hBootType,
 		(image_path == NULL) ? lmprintf(MSG_281, lmprintf(MSG_280)) : short_image_path), BT_IMAGE));
 
@@ -411,12 +411,12 @@ static BOOL IsRefsAvailable(MEDIA_TYPE MediaType)
 
 	if (MediaType != FixedMedia)
 		return FALSE;
-	if (nWindowsVersion < WINDOWS_8_1 || nWindowsBuildNumber <= 0)
+	if (WindowsVersion.Version < WINDOWS_8_1 || WindowsVersion.BuildNumber <= 0)
 		return FALSE;
 	// Per https://gist.github.com/0xbadfca11/da0598e47dd643d933dc
-	if (nWindowsBuildNumber < 16226)
+	if (WindowsVersion.BuildNumber < 16226)
 		return TRUE;
-	switch (nWindowsEdition) {
+	switch (WindowsVersion.Edition) {
 	case 0x0000000A: // Enterprise Server
 	case 0x0000001B: // Enterprise N
 	case 0x00000046: // Enterprise E
@@ -702,19 +702,15 @@ static void SetProposedLabel(int ComboIndex)
 {
 	const char no_label[] = STR_NO_LABEL, empty[] = "";
 
+	// If the user manually changed the label, try to preserve it
+	if (user_changed_label)
+		return;
+
 	app_changed_label = TRUE;
 	// If bootable ISO creation is selected, and we have an ISO selected with a valid name, use that
 	// Also some distros (eg. Arch) require the USB to have the same label as the ISO
 	if ((boot_type == BT_IMAGE) && (image_path != NULL) && (img_report.label[0] != 0)) {
 		SetWindowTextU(hLabel, img_report.label);
-		// If we force the ISO label, we need to reset the user_changed_label flag
-		user_changed_label = FALSE;
-		return;
-	}
-
-	// If the user manually changed the label, try to preserve it
-	if (user_changed_label) {
-		app_changed_label = FALSE;
 		return;
 	}
 
@@ -1393,9 +1389,10 @@ DWORD WINAPI ImageScanThread(LPVOID param)
 			SetFileSystemAndClusterSize(NULL);
 			SetFSFromISO();
 			SetMBRProps();
+			user_changed_label = FALSE;
 			SetProposedLabel(ComboBox_GetCurSel(hDeviceList));
 		} else {
-			SendMessage(hMainDialog, WM_COMMAND, (CBN_SELCHANGE_INTERNAL<<16) | IDC_FILE_SYSTEM,
+			SendMessage(hMainDialog, WM_COMMAND, (CBN_SELCHANGE_INTERNAL << 16) | IDC_FILE_SYSTEM,
 				ComboBox_GetCurSel(hFileSystem));
 		}
 		// Lose the focus on the select ISO (but place it on Close)
@@ -1497,7 +1494,7 @@ static DWORD WINAPI BootCheckThread(LPVOID param)
 				goto out;
 			}
 			if (SelectedDrive.MediaType != FixedMedia) {
-				if ((target_type == TT_UEFI) && (partition_type == PARTITION_STYLE_GPT) && (nWindowsBuildNumber < 15000)) {
+				if ((target_type == TT_UEFI) && (partition_type == PARTITION_STYLE_GPT) && (WindowsVersion.BuildNumber < 15000)) {
 					// Up to Windows 10 Creators Update (1703), we were screwed, since we need access to 2 partitions at the same time.
 					// Thankfully, the newer Windows allow mounting multiple partitions on the same REMOVABLE drive.
 					MessageBoxExU(hMainDialog, lmprintf(MSG_198), lmprintf(MSG_190), MB_OK|MB_ICONERROR|MB_IS_RTL, selected_langid);
@@ -1514,7 +1511,7 @@ static DWORD WINAPI BootCheckThread(LPVOID param)
 			default:
 				break;
 			}
-			if ((nWindowsVersion >= WINDOWS_8) && IS_WINDOWS_1X(img_report)) {
+			if ((WindowsVersion.Version >= WINDOWS_8) && IS_WINDOWS_1X(img_report)) {
 				StrArray options;
 				int arch = _log2(img_report.has_efi >> 1);
 				uint8_t map[8] = { 0 }, b = 1;
@@ -1576,7 +1573,7 @@ static DWORD WINAPI BootCheckThread(LPVOID param)
 			MessageBoxExU(hMainDialog, lmprintf(MSG_100), lmprintf(MSG_099), MB_OK | MB_ICONERROR | MB_IS_RTL, selected_langid);
 			goto out;
 		}
-		if ((nWindowsVersion >= WINDOWS_8) && IS_WINDOWS_1X(img_report) && (!is_windows_to_go)) {
+		if ((WindowsVersion.Version >= WINDOWS_8) && IS_WINDOWS_1X(img_report) && (!is_windows_to_go)) {
 			StrArray options;
 			int arch = _log2(img_report.has_efi >> 1);
 			uint8_t map[8] = { 0 }, b = 1;
@@ -1894,37 +1891,6 @@ static __inline const char* IsAlphaOrBeta(void)
 #endif
 }
 
-static __inline DWORD GetApplicationArch(void)
-{
-#if defined(_M_AMD64)
-	return IMAGE_FILE_MACHINE_AMD64;
-#elif defined(_M_IX86)
-	return IMAGE_FILE_MACHINE_I386;
-#elif defined(_M_ARM64)
-	return IMAGE_FILE_MACHINE_ARM64;
-#elif defined(_M_ARM)
-	return IMAGE_FILE_MACHINE_ARM;
-#else
-	return IMAGE_FILE_MACHINE_UNKNOWN;
-#endif
-}
-
-static const char* GetArchName(USHORT uArch)
-{
-	switch (uArch) {
-	case IMAGE_FILE_MACHINE_AMD64:
-		return "x64";
-	case IMAGE_FILE_MACHINE_I386:
-		return "x86";
-	case IMAGE_FILE_MACHINE_ARM64:
-		return "Arm64";
-	case IMAGE_FILE_MACHINE_ARM:
-		return "Arm";
-	default:
-		return "(Unknown Arch)";
-	}
-}
-
 static void InitDialog(HWND hDlg)
 {
 	DWORD len;
@@ -2026,10 +1992,15 @@ static void InitDialog(HWND hDlg)
 	// Oh, and https://devblogs.microsoft.com/oldnewthing/20220209-00/?p=106239 is *WRONG*:
 	// Get­Native­System­Info() will not tell you what the native system architecture is when
 	// running x86 code on ARM64. Instead you have to use IsWow64Process2(), which is only
-	// available on Windows 10 1511 or later...
+	// available on Windows 10 1709 or later...
 	if ((pfIsWow64Process2 != NULL) && pfIsWow64Process2(GetCurrentProcess(), &ProcessMachine, &NativeMachine)) {
+		// x64 running emulated on ARM64 returns IMAGE_FILE_MACHINE_UNKNOWN for ProcessMachine
+		// because Microsoft does not consider it a WOW64 process. So we need to fix
+		// ProcessMachine ourselves to *ACTUALLY* return the bloody process machine...
+		if (ProcessMachine == IMAGE_FILE_MACHINE_UNKNOWN)
+			ProcessMachine = GetApplicationArch();
 		if ((NativeMachine == IMAGE_FILE_MACHINE_ARM || NativeMachine == IMAGE_FILE_MACHINE_ARM64) &&
-			(ProcessMachine == IMAGE_FILE_MACHINE_I386 || ProcessMachine == IMAGE_FILE_MACHINE_I386))
+			(ProcessMachine == IMAGE_FILE_MACHINE_I386 || ProcessMachine == IMAGE_FILE_MACHINE_AMD64))
 			uprintf("Notice: Running emulated on %s platform", GetArchName(NativeMachine));
 	}
 	for (i = 0; i < ARRAYSIZE(resource); i++) {
@@ -2044,7 +2015,7 @@ static void InitDialog(HWND hDlg)
 			free(buf);
 		}
 	}
-	uprintf("Windows version: %s", WindowsVersionStr);
+	uprintf("Windows version: %s", WindowsVersion.VersionStr);
 	uprintf("Syslinux versions: %s%s, %s%s", embedded_sl_version_str[0], embedded_sl_version_ext[0],
 		embedded_sl_version_str[1], embedded_sl_version_ext[1]);
 	uprintf("Grub versions: %s, %s", GRUB4DOS_VERSION, GRUB2_PACKAGE_VERSION);
@@ -2055,6 +2026,11 @@ static void InitDialog(HWND hDlg)
 			"one. Because of this, some messages will only be displayed in English.", selected_locale->txt[1]);
 		uprintf("If you think you can help update this translation, please e-mail the author of this application");
 	}
+	// Detect and report system limitations
+	if (ReadRegistryKeyBool(HKEY_LOCAL_MACHINE, "SYSTEM\\CurrentControlSet\\Policies\\Microsoft\\FVE"))
+		uprintf("WARNING: This system has a policy set to prevent write access to FIXED drives not using BitLocker");
+	if (ReadRegistryKeyBool(HKEY_LOCAL_MACHINE, "SYSTEM\\CurrentControlSet\\Control\\StorageDevicePolicies\\WriteProtect"))
+		uprintf("WARNING: This system has a policy set to prevent write access to storage devices");
 	if (!is_vds_available)
 		uprintf("Notice: Windows VDS is unavailable");
 
@@ -2279,7 +2255,8 @@ DWORD CheckDriveAccess(DWORD dwTimeOut, BOOL bPrompt)
 			proceed = FALSE;
 			uprintf("Found potentially blocking process(es) against %s:", &PhysicalPath[4]);
 			for (j = 0; j < BlockingProcess.Index; j++)
-				uprintf(BlockingProcess.String[j]);
+				// BlockingProcess.String[j] may contain a '%' so don't feed it as a naked format string
+				uprintf("%s", BlockingProcess.String[j]);
 		}
 	}
 
@@ -2299,7 +2276,8 @@ DWORD CheckDriveAccess(DWORD dwTimeOut, BOOL bPrompt)
 				proceed = FALSE;
 				uprintf("Found potentially blocking process(es) against %s", drive_name);
 				for (j = 0; j < BlockingProcess.Index; j++)
-					uprintf(BlockingProcess.String[j]);
+					// BlockingProcess.String[j] may contain a '%' so don't feed it as a naked format string
+					uprintf("%s", BlockingProcess.String[j]);
 			}
 		}
 	}
@@ -2451,7 +2429,7 @@ static INT_PTR CALLBACK MainCallback(HWND hDlg, UINT message, WPARAM wParam, LPA
 				nHeight = DialogRect.bottom - DialogRect.top;
 				GetWindowRect(hDlg, &DialogRect);
 				offset = GetSystemMetrics(SM_CXBORDER);
-				if (nWindowsVersion >= WINDOWS_10) {
+				if (WindowsVersion.Version >= WINDOWS_10) {
 					// See https://stackoverflow.com/a/42491227/1069307
 					// I agree with Stephen Hazel: Whoever at Microsoft thought it would be a great idea to
 					// add a *FRIGGING INVISIBLE BORDER* in Windows 10 should face the harshest punishment!
@@ -2839,7 +2817,6 @@ static INT_PTR CALLBACK MainCallback(HWND hDlg, UINT message, WPARAM wParam, LPA
 				if (!op_in_progress) {
 					queued_hotplug_event = FALSE;
 					GetDevices((DWORD)ComboBox_GetCurItemData(hDeviceList));
-					user_changed_label = FALSE;
 					EnableControls(TRUE, FALSE);
 					if (ComboBox_GetCurSel(hDeviceList) < 0) {
 						SetPartitionSchemeAndTargetSystem(FALSE);
@@ -2924,7 +2901,7 @@ static INT_PTR CALLBACK MainCallback(HWND hDlg, UINT message, WPARAM wParam, LPA
 		// The things one must do to get an ellipsis and text alignment on the status bar...
 		if (wParam == IDC_STATUS) {
 			pDI = (DRAWITEMSTRUCT*)lParam;
-			if (nWindowsVersion >= WINDOWS_10)
+			if (WindowsVersion.Version >= WINDOWS_10)
 				pDI->rcItem.top += (int)(1.0f * fScale);
 			else if (fScale >= 1.49f)
 				pDI->rcItem.top -= (int)(1.5f * fScale);
@@ -3206,7 +3183,7 @@ static INT_PTR CALLBACK MainCallback(HWND hDlg, UINT message, WPARAM wParam, LPA
 			if (BlockingProcess.Index > 0) {
 				ListDialog(lmprintf(MSG_042), lmprintf(MSG_055), BlockingProcess.String, BlockingProcess.Index);
 			} else {
-				if (nWindowsVersion >= WINDOWS_10) {
+				if (WindowsVersion.Version >= WINDOWS_10) {
 					// Try to detect if 'Controlled Folder Access' is enabled on Windows 10 or later. See also:
 					// http://www.winhelponline.com/blog/use-controlled-folder-access-windows-10-windows-defender
 					char cmdline[256];
@@ -3324,7 +3301,7 @@ FARPROC WINAPI dllDelayLoadHook(unsigned dliNotify, PDelayLoadInfo pdli)
 {
 	if (dliNotify == dliNotePreLoadLibrary) {
 		// Windows 7 without KB2533623 does not support the LOAD_LIBRARY_SEARCH_SYSTEM32 flag.
-		// That is is OK, because the delay load handler will interrupt the NULL return value
+		// That is OK, because the delay load handler will interrupt the NULL return value
 		// to mean that it should perform a normal LoadLibrary.
 		return (FARPROC)LoadLibraryExA(pdli->szDll, NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
 	}
@@ -3360,7 +3337,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 	char *tmp, *locale_name = NULL, **argv = NULL;
 	wchar_t **wenv, **wargv;
 	PF_TYPE_DECL(CDECL, int, __wgetmainargs, (int*, wchar_t***, wchar_t***, int, int*));
-	PF_TYPE_DECL(WINAPI, BOOL, SetDefaultDllDirectories, (DWORD));
 	HANDLE mutex = NULL, hogmutex = NULL, hFile = NULL;
 	HWND hDlg = NULL;
 	HDC hDC;
@@ -3389,19 +3365,12 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 	// 'somelib.dll;%(DelayLoadDLLs)' must be added to the 'Delay Loaded Dlls' option of
 	// the linker properties in Visual Studio (which means this won't work with MinGW).
 	// For all other DLLs, use SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32).
-	// Finally, we need to perform the whole gymkhana below, where we can't call on
-	// SetDefaultDllDirectories() directly, because Windows 7 doesn't have the API exposed.
-	// Also, no, Coverity, we never need to care about freeing kernel32 as a library.
-	// coverity[leaked_storage]
-	pfSetDefaultDllDirectories = (SetDefaultDllDirectories_t)
-		GetProcAddress(LoadLibraryW(L"kernel32.dll"), "SetDefaultDllDirectories");
-	if (pfSetDefaultDllDirectories != NULL)
-		pfSetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32);
+	SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32);
 
 	uprintf("*** " APPLICATION_NAME " init ***\n");
 	its_a_me_mario = GetUserNameA((char*)(uintptr_t)&u, &size) && (u == 7104878);
 	// coverity[pointless_string_compare]
-	is_x86_32 = (strcmp(APPLICATION_ARCH, "x86") == 0);
+	is_x86_64 = (strcmp(APPLICATION_ARCH, "x64") == 0);
 
 	// Retrieve various app & system directories.
 	if (GetCurrentDirectoryU(sizeof(app_dir), app_dir) == 0) {
@@ -3438,12 +3407,16 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 	static_strcpy(sysnative_dir, system_dir);
 	// But if the app is 32 bit and the OS is 64 bit, Sysnative must differ from System32
 #if (!defined(_WIN64) && !defined(BUILD64))
-	if (is_x64()) {
-		if (GetSystemWindowsDirectoryU(sysnative_dir, sizeof(sysnative_dir)) == 0) {
-			uprintf("Could not get Windows directory: %s", WindowsErrorString());
-			static_strcpy(sysnative_dir, "C:\\Windows");
+	{
+		BOOL is_WOW64 = FALSE;
+		IsWow64Process(GetCurrentProcess(), &is_WOW64);
+		if (is_WOW64) {
+			if (GetSystemWindowsDirectoryU(sysnative_dir, sizeof(sysnative_dir)) == 0) {
+				uprintf("Could not get Windows directory: %s", WindowsErrorString());
+				static_strcpy(sysnative_dir, "C:\\Windows");
+			}
+			static_strcat(sysnative_dir, "\\Sysnative");
 		}
-		static_strcat(sysnative_dir, "\\Sysnative");
 	}
 #endif
 
@@ -3516,14 +3489,18 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 					// No need to reprocess that option
 					break;
 				case 'i':
-					if (_access(optarg, 0) != -1) {
+					safe_free(image_path);
+					image_path = calloc(1, MAX_PATH);
+					if (image_path == NULL)
+						break;
+					IGNORE_RETVAL(GetFullPathNameU(optarg, MAX_PATH, image_path, NULL));
+					// FILE_ATTRIBUTE_DIRECTORY is set for both dir and access error
+					if (GetFileAttributesU(image_path) & FILE_ATTRIBUTE_DIRECTORY) {
+						printf("Could not find image '%s'\n", image_path);
 						safe_free(image_path);
-						image_path = safe_strdup(optarg);
-						img_provided = TRUE;
+						break;
 					}
-					else {
-						printf("Could not find ISO image '%s'\n", optarg);
-					}
+					img_provided = TRUE;
 					break;
 				case 'l':
 					if (isdigitU(optarg[0])) {
@@ -3567,7 +3544,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 			if (list_params) {
 				uprintf("Command line arguments:");
 				for (i = 1; i < argc; i++)
-					uprintf(argv[i]);
+					// argv[i] may contain a '%' so don't feed it as a naked format string.
+					uprintf("%s", argv[i]);
 			}
 		}
 	} else {
@@ -3636,8 +3614,9 @@ skip_args_processing:
 	// Init localization
 	init_localization();
 
-	// Seek for a loc file in the current directory
-	if (GetFileAttributesU(rufus_loc) == INVALID_FILE_ATTRIBUTES) {
+	// Seek for a loc file in the application directory
+	static_sprintf(loc_file, "%s\\%s", app_dir, rufus_loc);
+	if (GetFileAttributesU(loc_file) == INVALID_FILE_ATTRIBUTES) {
 		uprintf("loc file not found in current directory - embedded one will be used");
 
 		loc_data = (BYTE*)GetResource(hMainInstance, MAKEINTRESOURCEA(IDR_LC_RUFUS_LOC), _RT_RCDATA, "embedded.loc", &loc_size, FALSE);
@@ -3661,9 +3640,9 @@ skip_args_processing:
 		uprintf("localization: extracted data to '%s'", loc_file);
 		safe_closehandle(hFile);
 	} else {
-		static_sprintf(loc_file, "%s\\%s", app_dir, rufus_loc);
 		external_loc_file = TRUE;
-		uprintf("using external loc file '%s'", loc_file);
+		// We do want to report if an external loc file is being used, in the UI log
+		ubprintf("Using external loc file '%s'", loc_file);
 	}
 
 	if ( (!get_supported_locales(loc_file))
@@ -3676,21 +3655,22 @@ skip_args_processing:
 	selected_langid = get_language_id(selected_locale);
 
 	// Set the Windows version
-	GetWindowsVersion();
+	GetWindowsVersion(&WindowsVersion);
 	// Force a version if specified as parameter, but without allowing folks running
 	// a version of Windows we no longer support to use the option as a bypass!
-	if (nWindowsVersion > WINDOWS_7 && forced_windows_version != 0)
-		nWindowsVersion = forced_windows_version;
+	if (WindowsVersion.Version > WINDOWS_7 && forced_windows_version != 0)
+		WindowsVersion.Version = forced_windows_version;
 
 	// ...and nothing of value was lost
-	// TODO: Set to <= for 3.23
-	if (nWindowsVersion < WINDOWS_7) {
+	if (WindowsVersion.Version <= WINDOWS_7) {
 		// Load the translation before we print the error
 		get_loc_data_file(loc_file, selected_locale);
 		right_to_left_mode = ((selected_locale->ctrl_id) & LOC_RIGHT_TO_LEFT);
 		// Set MB_SYSTEMMODAL to prevent Far Manager from stealing focus...
 		MessageBoxExU(NULL,
-			lmprintf(MSG_294, (nWindowsVersion == WINDOWS_7) ? 3 : 2, (nWindowsVersion == WINDOWS_7) ? 22 : 18),
+			lmprintf(MSG_294,
+				(WindowsVersion.Version == WINDOWS_7) ? 3 : 2,
+				(WindowsVersion.Version == WINDOWS_7) ? 22 : 18),
 			lmprintf(MSG_293), MB_ICONSTOP | MB_IS_RTL | MB_SYSTEMMODAL, selected_langid);
 		goto out;
 	}

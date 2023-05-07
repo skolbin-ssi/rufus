@@ -103,24 +103,22 @@ static BOOL GetUSBProperties(char* parent_path, char* device_id, usb_device_prop
 		r = TRUE;
 	}
 
-	// In their great wisdom, Microsoft decided to BREAK the USB speed report between Windows 7 and Windows 8
-	if (nWindowsVersion >= WINDOWS_8) {
-		size = sizeof(conn_info_v2);
-		memset(&conn_info_v2, 0, size);
-		conn_info_v2.ConnectionIndex = (ULONG)props->port;
-		conn_info_v2.Length = size;
-		conn_info_v2.SupportedUsbProtocols.Usb300 = 1;
-		if (!DeviceIoControl(handle, IOCTL_USB_GET_NODE_CONNECTION_INFORMATION_EX_V2, &conn_info_v2, size, &conn_info_v2, size, &size, NULL)) {
-			uprintf("Could not get node connection information (V2) for device '%s': %s", device_id, WindowsErrorString());
-		} else if (conn_info_v2.Flags.DeviceIsOperatingAtSuperSpeedPlusOrHigher) {
-			props->speed = USB_SPEED_SUPER_PLUS;
-		} else if (conn_info_v2.Flags.DeviceIsOperatingAtSuperSpeedOrHigher) {
-			props->speed = USB_SPEED_SUPER;
-		} else if (conn_info_v2.Flags.DeviceIsSuperSpeedPlusCapableOrHigher) {
-			props->lower_speed = 2;
-		} else if (conn_info_v2.Flags.DeviceIsSuperSpeedCapableOrHigher) {
-			props->lower_speed = 1;
-		}
+	// The USB speed report of modern Windows is a complete mess
+	size = sizeof(conn_info_v2);
+	memset(&conn_info_v2, 0, size);
+	conn_info_v2.ConnectionIndex = (ULONG)props->port;
+	conn_info_v2.Length = size;
+	conn_info_v2.SupportedUsbProtocols.Usb300 = 1;
+	if (!DeviceIoControl(handle, IOCTL_USB_GET_NODE_CONNECTION_INFORMATION_EX_V2, &conn_info_v2, size, &conn_info_v2, size, &size, NULL)) {
+		uprintf("Could not get node connection information (V2) for device '%s': %s", device_id, WindowsErrorString());
+	} else if (conn_info_v2.Flags.DeviceIsOperatingAtSuperSpeedPlusOrHigher) {
+		props->speed = USB_SPEED_SUPER_PLUS;
+	} else if (conn_info_v2.Flags.DeviceIsOperatingAtSuperSpeedOrHigher) {
+		props->speed = USB_SPEED_SUPER;
+	} else if (conn_info_v2.Flags.DeviceIsSuperSpeedPlusCapableOrHigher) {
+		props->lower_speed = 2;
+	} else if (conn_info_v2.Flags.DeviceIsSuperSpeedCapableOrHigher) {
+		props->lower_speed = 1;
 	}
 
 out:
@@ -494,6 +492,7 @@ BOOL GetDevices(DWORD devnum)
 	char drive_letters[27], *device_id, *devid_list = NULL, display_msg[128];
 	char *p, *label, *display_name, buffer[MAX_PATH], str[MAX_PATH], device_instance_id[MAX_PATH], *method_str, *hub_path;
 	uint32_t ignore_vid_pid[MAX_IGNORE_USB];
+	uint64_t drive_size = 0;
 	usb_device_props props;
 
 	IGNORE_RETVAL(ComboBox_ResetContent(hDeviceList));
@@ -779,6 +778,16 @@ BOOL GetDevices(DWORD devnum)
 				break;
 			}
 		}
+		// Windows has the bad habit of appending "SCSI Disk Device" to the description
+		// of UAS devices, which of course screws up detection of device that actually
+		// describe themselves as SCSI-like disks, so replace that with "UAS Device".
+		if (props.is_UASP) {
+			const char scsi_disk_device_str[] = "SCSI Disk Device";
+			const char uas_device_str[] = "UAS Device";
+			char* marker = strstr(buffer, scsi_disk_device_str);
+			if (marker != NULL && marker[sizeof(scsi_disk_device_str)] == 0)
+				memcpy(marker, uas_device_str, sizeof(uas_device_str));
+		}
 		if (props.is_VHD) {
 			uprintf("Found VHD device '%s'", buffer);
 		} else if ((props.is_CARD) && ((!props.is_USB) || ((props.vid == 0) && (props.pid == 0)))) {
@@ -822,8 +831,8 @@ BOOL GetDevices(DWORD devnum)
 			}
 			if (props.speed >= USB_SPEED_MAX)
 				props.speed = 0;
-			uprintf("Found %s%s%s device '%s' (%s) %s", props.is_UASP?"UAS (":"",
-				usb_speed_name[props.speed], props.is_UASP?")":"", buffer, str, method_str);
+			uprintf("Found %s%s%s device '%s' (%s) %s", props.is_UASP ? "UAS (" : "",
+				usb_speed_name[props.speed], props.is_UASP ? ")" : "", buffer, str, method_str);
 			if (props.lower_speed)
 				uprintf("NOTE: This device is a USB 3.%c device operating at lower speed...", '0' + props.lower_speed - 1);
 		}
@@ -881,7 +890,8 @@ BOOL GetDevices(DWORD devnum)
 				safe_free(devint_detail_data);
 				break;
 			}
-			if (GetDriveSize(drive_index) < (MIN_DRIVE_SIZE*MB)) {
+			drive_size = GetDriveSize(drive_index);
+			if (drive_size < (MIN_DRIVE_SIZE * MB)) {
 				uprintf("Device eliminated because it is smaller than %d MB", MIN_DRIVE_SIZE);
 				safe_free(devint_detail_data);
 				break;
@@ -918,7 +928,7 @@ BOOL GetDevices(DWORD devnum)
 					uprintf("NOTE: You can enable the listing of Hard Drives under 'advanced drive properties'");
 					safe_free(devint_detail_data);
 					break;
-				} else if ((!enable_HDDs) && (props.is_CARD) && (GetDriveSize(drive_index) > MAX_DEFAULT_LIST_CARD_SIZE * GB)) {
+				} else if ((!enable_HDDs) && (props.is_CARD) && (drive_size > MAX_DEFAULT_LIST_CARD_SIZE * GB)) {
 					uprintf("Device eliminated because it was detected as a card larger than %d GB", MAX_DEFAULT_LIST_CARD_SIZE);
 					uprintf("To use such a card, check 'List USB Hard Drives' under 'advanced drive properties'");
 					safe_free(devint_detail_data);
@@ -939,10 +949,10 @@ BOOL GetDevices(DWORD devnum)
 				// The empty string is returned for drives that don't have any volumes assigned
 				if (drive_letters[0] == 0) {
 					display_name = lmprintf(MSG_046, label, drive_number,
-						SizeToHumanReadable(GetDriveSize(drive_index), FALSE, use_fake_units));
+						SizeToHumanReadable(drive_size, FALSE, use_fake_units));
 				} else {
 					// Find the UEFI:TOGO partition(s) (and eliminate them form our listing)
-					for (k=0; drive_letters[k]; k++) {
+					for (k = 0; drive_letters[k]; k++) {
 						uefi_togo_check[0] = drive_letters[k];
 						if (PathFileExistsA(uefi_togo_check)) {
 							for (l=k; drive_letters[l]; l++)
@@ -973,7 +983,8 @@ BOOL GetDevices(DWORD devnum)
 						break;
 					}
 					safe_sprintf(&display_msg[strlen(display_msg)], sizeof(display_msg) - strlen(display_msg),
-						"%s [%s]", (right_to_left_mode)?RIGHT_TO_LEFT_MARK:"", SizeToHumanReadable(GetDriveSize(drive_index), FALSE, use_fake_units));
+						"%s [%s]", (right_to_left_mode)?RIGHT_TO_LEFT_MARK:"",
+						SizeToHumanReadable(drive_size, FALSE, use_fake_units));
 					display_name = display_msg;
 				}
 
@@ -982,7 +993,7 @@ BOOL GetDevices(DWORD devnum)
 				rufus_drive[num_drives].name = safe_strdup(buffer);
 				rufus_drive[num_drives].display_name = safe_strdup(display_name);
 				rufus_drive[num_drives].label = safe_strdup(label);
-				rufus_drive[num_drives].size = GetDriveSize(drive_index);
+				rufus_drive[num_drives].size = drive_size;
 				assert(rufus_drive[num_drives].size != 0);
 				if (hub_path != NULL) {
 					rufus_drive[num_drives].hub = safe_strdup(hub_path);

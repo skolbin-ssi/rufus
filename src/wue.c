@@ -430,7 +430,7 @@ BOOL PopulateWindowsVersion(void)
 
 	memset(&img_report.win_version, 0, sizeof(img_report.win_version));
 
-	if ((nWindowsVersion < WINDOWS_8) || ((WimExtractCheck(TRUE) & 4) == 0))
+	if ((WindowsVersion.Version < WINDOWS_8) || ((WimExtractCheck(TRUE) & 4) == 0))
 		return FALSE;
 
 	// If we're not using a straight install.wim, we need to mount the ISO to access it
@@ -486,7 +486,7 @@ int SetWinToGoIndex(void)
 	// Sanity checks
 	wintogo_index = -1;
 	wininst_index = 0;
-	if ((nWindowsVersion < WINDOWS_8) || ((WimExtractCheck(FALSE) & 4) == 0) ||
+	if ((WindowsVersion.Version < WINDOWS_8) || ((WimExtractCheck(FALSE) & 4) == 0) ||
 		(ComboBox_GetCurItemData(hFileSystem) != FS_NTFS)) {
 		return -1;
 	}
@@ -606,7 +606,7 @@ BOOL SetupWinToGo(DWORD DriveIndex, const char* drive_name, BOOL use_esp)
 
 	uprintf("Windows To Go mode selected");
 	// Additional sanity checks
-	if ((use_esp) && (SelectedDrive.MediaType != FixedMedia) && (nWindowsBuildNumber < 15000)) {
+	if ((use_esp) && (SelectedDrive.MediaType != FixedMedia) && (WindowsVersion.BuildNumber < 15000)) {
 		FormatStatus = ERROR_SEVERITY_ERROR | FAC(FACILITY_STORAGE) | ERROR_NOT_SUPPORTED;
 		return FALSE;
 	}
@@ -673,6 +673,8 @@ BOOL SetupWinToGo(DWORD DriveIndex, const char* drive_name, BOOL use_esp)
 	static_sprintf(cmd, "%s\\bcdboot.exe %s\\Windows /v /f %s /s %s", sysnative_dir, drive_name,
 		HAS_BOOTMGR_BIOS(img_report) ? (HAS_BOOTMGR_EFI(img_report) ? "ALL" : "BIOS") : "UEFI",
 		(use_esp) ? ms_efi : drive_name);
+	// I don't believe we can ever have a stray '%' in cmd, but just in case...
+	assert(strchr(cmd, '%') == NULL);
 	uprintf(cmd);
 	if (RunCommand(cmd, sysnative_dir, usb_debug) != 0) {
 		// Try to continue... but report a failure
@@ -698,6 +700,7 @@ BOOL SetupWinToGo(DWORD DriveIndex, const char* drive_name, BOOL use_esp)
 	uprintf("Disabling use of the Windows Recovery Environment using command:");
 	static_sprintf(cmd, "%s\\bcdedit.exe /store %s\\EFI\\Microsoft\\Boot\\BCD /set {default} recoveryenabled no",
 		sysnative_dir, (use_esp) ? ms_efi : drive_name);
+	assert(strchr(cmd, '%') == NULL);
 	uprintf(cmd);
 	RunCommand(cmd, sysnative_dir, usb_debug);
 
@@ -883,7 +886,7 @@ out:
 	}
 	if (mount_path) {
 		uprintf("Unmounting '%s[%d]'...", boot_wim_path, wim_index);
-		WimUnmountImage(boot_wim_path, wim_index);
+		WimUnmountImage(boot_wim_path, wim_index, TRUE);
 		UpdateProgressWithInfo(OP_PATCH, MSG_325, PATCH_PROGRESS_TOTAL, PATCH_PROGRESS_TOTAL);
 	}
 	free(mount_path);

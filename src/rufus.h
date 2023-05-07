@@ -160,7 +160,7 @@
 #define static_sprintf(dst, ...) safe_sprintf(dst, sizeof(dst), __VA_ARGS__)
 #define safe_atoi(str) ((((char*)(str))==NULL)?0:atoi(str))
 #define safe_strlen(str) ((((char*)(str))==NULL)?0:strlen(str))
-#define safe_strdup _strdup
+#define safe_strdup(str) ((((char*)(str))==NULL)?NULL:_strdup(str))
 #if defined(_MSC_VER)
 #define safe_vsnprintf(buf, size, format, arg) _vsnprintf_s(buf, size, _TRUNCATE, format, arg)
 #else
@@ -172,20 +172,18 @@ static __inline void static_repchr(char* p, char s, char r) {
 #define to_unix_path(str) static_repchr(str, '\\', '/')
 #define to_windows_path(str) static_repchr(str, '/', '\\')
 
-extern void _uprintf(const char *format, ...);
-extern void _uprintfs(const char *str);
-#define uprintf(...) _uprintf(__VA_ARGS__)
-#define uprintfs(s) _uprintfs(s)
-#define vuprintf(...) do { if (verbose) _uprintf(__VA_ARGS__); } while(0)
-#define vvuprintf(...) do { if (verbose > 1) _uprintf(__VA_ARGS__); } while(0)
-#define suprintf(...) do { if (!bSilent) _uprintf(__VA_ARGS__); } while(0)
-#define uuprintf(...) do { if (usb_debug) _uprintf(__VA_ARGS__); } while(0)
+extern void uprintf(const char *format, ...);
+extern void uprintfs(const char *str);
+#define vuprintf(...) do { if (verbose) uprintf(__VA_ARGS__); } while(0)
+#define vvuprintf(...) do { if (verbose > 1) uprintf(__VA_ARGS__); } while(0)
+#define suprintf(...) do { if (!bSilent) uprintf(__VA_ARGS__); } while(0)
+#define uuprintf(...) do { if (usb_debug) uprintf(__VA_ARGS__); } while(0)
 #define ubprintf(...) do { safe_sprintf(&ubuffer[ubuffer_pos], UBUFFER_SIZE - ubuffer_pos - 4, __VA_ARGS__); \
 	ubuffer_pos = strlen(ubuffer); ubuffer[ubuffer_pos++] = '\r'; ubuffer[ubuffer_pos++] = '\n'; \
 	ubuffer[ubuffer_pos] = 0; } while(0)
 #define ubflush() do { if (ubuffer_pos) uprintf("%s", ubuffer); ubuffer_pos = 0; } while(0)
 #ifdef _DEBUG
-#define duprintf(...) _uprintf(__VA_ARGS__)
+#define duprintf uprintf
 #else
 #define duprintf(...)
 #endif
@@ -476,22 +474,7 @@ typedef enum TASKBAR_PROGRESS_FLAGS
 	TASKBAR_PAUSED = 0x8
 } TASKBAR_PROGRESS_FLAGS;
 
-/* Windows versions */
-enum WindowsVersion {
-	WINDOWS_UNDEFINED = -1,
-	WINDOWS_UNSUPPORTED = 0,
-	WINDOWS_XP = 0x51,
-	WINDOWS_2003 = 0x52,	// Also XP_64
-	WINDOWS_VISTA = 0x60,	// Also Server 2008
-	WINDOWS_7 = 0x61,		// Also Server 2008_R2
-	WINDOWS_8 = 0x62,		// Also Server 2012
-	WINDOWS_8_1 = 0x63,		// Also Server 2012_R2
-	WINDOWS_10_PREVIEW1 = 0x64,
-	WINDOWS_10 = 0xA0,		// Also Server 2016, also Server 2019
-	WINDOWS_11 = 0xB0,		// Also Server 2022
-	WINDOWS_MAX
-};
-
+/* We can't use the Microsoft enums as we want to have RISC-V */
 enum ArchType {
 	ARCH_UNKNOWN = 0,
 	ARCH_X86_32,
@@ -505,6 +488,63 @@ enum ArchType {
 	ARCH_EBC,
 	ARCH_MAX
 };
+
+static __inline USHORT GetApplicationArch(void)
+{
+#if defined(_M_AMD64)
+	return IMAGE_FILE_MACHINE_AMD64;
+#elif defined(_M_IX86)
+	return IMAGE_FILE_MACHINE_I386;
+#elif defined(_M_ARM64)
+	return IMAGE_FILE_MACHINE_ARM64;
+#elif defined(_M_ARM)
+	return IMAGE_FILE_MACHINE_ARM;
+#else
+	return IMAGE_FILE_MACHINE_UNKNOWN;
+#endif
+}
+
+static __inline const char* GetArchName(USHORT uArch)
+{
+	switch (uArch) {
+	case IMAGE_FILE_MACHINE_AMD64:
+		return "x64";
+	case IMAGE_FILE_MACHINE_I386:
+		return "x86";
+	case IMAGE_FILE_MACHINE_ARM64:
+		return "arm64";
+	case IMAGE_FILE_MACHINE_ARM:
+		return "arm";
+	default:
+		return "unknown";
+	}
+}
+
+/* Windows versions */
+enum WindowsVersion {
+	WINDOWS_UNDEFINED = 0,
+	WINDOWS_XP = 0x51,
+	WINDOWS_2003 = 0x52,	// Also XP_64
+	WINDOWS_VISTA = 0x60,	// Also Server 2008
+	WINDOWS_7 = 0x61,		// Also Server 2008_R2
+	WINDOWS_8 = 0x62,		// Also Server 2012
+	WINDOWS_8_1 = 0x63,		// Also Server 2012_R2
+	WINDOWS_10_PREVIEW1 = 0x64,
+	WINDOWS_10 = 0xA0,		// Also Server 2016, also Server 2019
+	WINDOWS_11 = 0xB0,		// Also Server 2022
+	WINDOWS_MAX = 0xFFFF,
+};
+
+typedef struct {
+	DWORD Version;
+	DWORD Major;
+	DWORD Minor;
+	DWORD BuildNumber;
+	DWORD Ubr;
+	DWORD Edition;
+	USHORT Arch;
+	char VersionStr[128];
+} windows_version_t;
 
 // Windows User Experience (unattend.xml) flags and masks
 #define UNATTEND_SECUREBOOT_TPM_MINRAM      0x00001
@@ -545,20 +585,18 @@ extern uint64_t persistence_size;
 extern size_t ubuffer_pos;
 extern const int nb_steps[FS_MAX];
 extern float fScale;
-extern int nWindowsVersion, nWindowsBuildNumber, nWindowsEdition, dialog_showing, force_update;
-extern int fs_type, boot_type, partition_type, target_type;
+extern windows_version_t WindowsVersion;
+extern int dialog_showing, force_update, fs_type, boot_type, partition_type, target_type;
 extern unsigned long syslinux_ldlinux_len[2];
-extern char WindowsVersionStr[128], ubuffer[UBUFFER_SIZE], embedded_sl_version_str[2][12];
+extern char ubuffer[UBUFFER_SIZE], embedded_sl_version_str[2][12];
 extern char szFolderPath[MAX_PATH], app_dir[MAX_PATH], temp_dir[MAX_PATH], system_dir[MAX_PATH], sysnative_dir[MAX_PATH];
 extern char app_data_dir[MAX_PATH], *image_path, *fido_url;
 
 /*
  * Shared prototypes
  */
-extern void GetWindowsVersion(void);
-extern BOOL is_x64(void);
-extern int GetCpuArch(void);
-extern const char *WindowsErrorString(void);
+extern void GetWindowsVersion(windows_version_t* WindowsVersion);
+extern const char* WindowsErrorString(void);
 extern void DumpBufferHex(void *buf, size_t size);
 extern void PrintStatusInfo(BOOL info, BOOL debug, unsigned int duration, int msg_id, ...);
 #define PrintStatus(...) PrintStatusInfo(FALSE, FALSE, __VA_ARGS__)
@@ -646,6 +684,9 @@ extern BOOL ValidateOpensslSignature(BYTE* pbBuffer, DWORD dwBufferLen, BYTE* pb
 extern BOOL IsFontAvailable(const char* font_name);
 extern BOOL WriteFileWithRetry(HANDLE hFile, LPCVOID lpBuffer, DWORD nNumberOfBytesToWrite,
 	LPDWORD lpNumberOfBytesWritten, DWORD nNumRetries);
+extern HANDLE CreateFileWithTimeout(LPCSTR lpFileName, DWORD dwDesiredAccess, DWORD dwShareMode,
+	LPSECURITY_ATTRIBUTES lpSecurityAttributes, DWORD dwCreationDisposition, DWORD dwFlagsAndAttributes,
+	HANDLE hTemplateFile, DWORD dwTimeOut);
 extern BOOL SetThreadAffinity(DWORD_PTR* thread_affinity, size_t num_threads);
 extern BOOL HashFile(const unsigned type, const char* path, uint8_t* sum);
 extern BOOL HashBuffer(const unsigned type, const uint8_t* buf, const size_t len, uint8_t* sum);
@@ -737,11 +778,6 @@ static __inline HMODULE GetLibraryHandle(char* szLibraryName) {
 		goto out;
 	}
 	h = LoadLibraryExW(wszLibraryName, NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
-	// Some Windows 7 platforms (most likely the ones missing KB2533623 per the
-	// official LoadLibraryEx doc) can return ERROR_INVALID_PARAMETER when using
-	// the Ex() version. If that's the case, fallback to using LoadLibraryW().
-	if ((h == NULL) && (SCODE_CODE(GetLastError()) == ERROR_INVALID_PARAMETER))
-		h = LoadLibraryW(wszLibraryName);
 	if (h != NULL)
 		OpenedLibrariesHandle[OpenedLibrariesHandleSize++] = h;
 	else
@@ -760,6 +796,14 @@ out:
 	#proc, #name, WindowsErrorString()); goto out;} } while(0)
 #define PF_INIT_OR_SET_STATUS(proc, name)	do {PF_INIT(proc, name);         \
 	if ((pf##proc == NULL) && (NT_SUCCESS(status))) status = STATUS_NOT_IMPLEMENTED; } while(0)
+#if defined(_MSC_VER)
+#define TRY_AND_HANDLE(exception, TRY_CODE, EXCEPTION_CODE) __try TRY_CODE   \
+	__except (GetExceptionCode() == exception ? EXCEPTION_EXECUTE_HANDLER :  \
+			  EXCEPTION_CONTINUE_SEARCH) EXCEPTION_CODE
+#else
+// NB: Eventually we may try __try1 and __except1 from MinGW...
+#define TRY_AND_HANDLE(exception, TRY_CODE, EXCEPTION_CODE) TRY_CODE
+#endif
 
 /* Custom application errors */
 #define FAC(f)                         ((f)<<16)

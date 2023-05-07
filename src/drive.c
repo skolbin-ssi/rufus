@@ -1,7 +1,7 @@
 /*
  * Rufus: The Reliable USB Formatting Utility
  * Drive access function calls
- * Copyright © 2011-2022 Pete Batard <pete@akeo.ie>
+ * Copyright © 2011-2023 Pete Batard <pete@akeo.ie>
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -73,7 +73,7 @@ PF_TYPE_DECL(NTAPI, NTSTATUS, NtQueryVolumeInformationFile, (HANDLE, PIO_STATUS_
  */
 RUFUS_DRIVE_INFO SelectedDrive;
 extern BOOL write_as_esp;
-extern int nWindowsVersion, nWindowsBuildNumber;
+extern windows_version_t WindowsVersion;
 uint64_t partition_offset[PI_MAX];
 uint64_t persistence_size = 0;
 
@@ -203,7 +203,9 @@ static HANDLE GetHandle(char* Path, BOOL bLockDrive, BOOL bWriteAccess, BOOL bWr
 		uprintf("Could not lock access to %s: %s", Path, WindowsErrorString());
 		// See if we can report the processes are accessing the drive
 		if (!IS_ERROR(FormatStatus) && (access_mask == 0))
-			access_mask = SearchProcess(DevPath, SEARCH_PROCESS_TIMEOUT, TRUE, TRUE, FALSE);
+			// Double the search process timeout here, as Windows is so bloated with processes
+			// that 10 seconds has become way too small to get much of any results these days...
+			access_mask = SearchProcess(DevPath, 2 * SEARCH_PROCESS_TIMEOUT, TRUE, TRUE, FALSE);
 		// Try to continue if the only access rights we saw were for read-only
 		if ((access_mask & 0x07) != 0x01)
 			safe_closehandle(hDrive);
@@ -252,10 +254,10 @@ char* GetLogicalName(DWORD DriveIndex, uint64_t PartitionOffset, BOOL bKeepTrail
 	static const char* ignore_device[] = { "\\Device\\CdRom", "\\Device\\Floppy" };
 	static const char* volume_start = "\\\\?\\";
 	char *ret = NULL, volume_name[MAX_PATH], path[MAX_PATH];
-	BOOL bPrintHeader = TRUE;
+	BOOL r, bPrintHeader = TRUE;
 	HANDLE hDrive = INVALID_HANDLE_VALUE, hVolume = INVALID_HANDLE_VALUE;
 	VOLUME_DISK_EXTENTS_REDEF DiskExtents;
-	DWORD size;
+	DWORD size = 0;
 	UINT drive_type;
 	StrArray found_name;
 	uint64_t found_offset[MAX_PARTITIONS] = { 0 };
@@ -312,9 +314,10 @@ char* GetLogicalName(DWORD DriveIndex, uint64_t PartitionOffset, BOOL bKeepTrail
 			continue;
 		}
 
-		if ((!DeviceIoControl(hDrive, IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS, NULL, 0,
-			&DiskExtents, sizeof(DiskExtents), &size, NULL)) || (size <= 0)) {
-			suprintf("Could not get Disk Extents: %s", WindowsErrorString());
+		r = DeviceIoControl(hDrive, IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS, NULL, 0,
+			&DiskExtents, sizeof(DiskExtents), &size, NULL);
+		if ((!r) || (size == 0)) {
+			suprintf("Could not get Disk Extents: %s", r ? "(empty data)" : WindowsErrorString());
 			safe_closehandle(hDrive);
 			continue;
 		}
@@ -1059,15 +1062,17 @@ int GetDriveNumber(HANDLE hDrive, char* path)
 {
 	STORAGE_DEVICE_NUMBER_REDEF DeviceNumber;
 	VOLUME_DISK_EXTENTS_REDEF DiskExtents;
-	DWORD size;
+	DWORD size = 0;
+	BOOL s;
 	int r = -1;
 
 	if (!DeviceIoControl(hDrive, IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS, NULL, 0,
 		&DiskExtents, sizeof(DiskExtents), &size, NULL) || (size <= 0) || (DiskExtents.NumberOfDiskExtents < 1) ) {
 		// DiskExtents are NO_GO (which is the case for external USB HDDs...)
-		if(!DeviceIoControl(hDrive, IOCTL_STORAGE_GET_DEVICE_NUMBER, NULL, 0,
-			&DeviceNumber, sizeof(DeviceNumber), &size, NULL ) || (size <= 0)) {
-			uprintf("Could not get device number for device %s: %s", path, WindowsErrorString());
+		s = DeviceIoControl(hDrive, IOCTL_STORAGE_GET_DEVICE_NUMBER, NULL, 0, &DeviceNumber, sizeof(DeviceNumber),
+			&size, NULL);
+		if ((!s) || (size == 0)) {
+			uprintf("Could not get device number for device %s %s", path, s ? "(empty data)" : WindowsErrorString());
 			return -1;
 		}
 		r = (int)DeviceNumber.DeviceNumber;
@@ -1124,7 +1129,7 @@ static BOOL _GetDriveLettersAndType(DWORD DriveIndex, char* drive_letters, UINT*
 		goto out;
 	}
 	if (size > sizeof(drives)) {
-		uprintf("GetLogicalDriveStrings: Buffer too small (required %d vs. %d)", size, sizeof(drives));
+		uprintf("GetLogicalDriveStrings: Buffer too small (required %lu vs. %zu)", size, sizeof(drives));
 		goto out;
 	}
 
@@ -1144,10 +1149,13 @@ static BOOL _GetDriveLettersAndType(DWORD DriveIndex, char* drive_letters, UINT*
 			continue;
 
 		static_sprintf(logical_drive, "\\\\.\\%c:", toupper(drive[0]));
-		hDrive = CreateFileA(logical_drive, GENERIC_READ, FILE_SHARE_READ|FILE_SHARE_WRITE,
-			NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+		// This call appears to freeze on some systems and we don't want to spend more
+		// time than needed waiting for unresponsive drives, so use a 3 seconds timeout.
+		hDrive = CreateFileWithTimeout(logical_drive, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+				NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL, 3000);
 		if (hDrive == INVALID_HANDLE_VALUE) {
-//			uprintf("Warning: could not open drive %c: %s", toupper(drive[0]), WindowsErrorString());
+			if (GetLastError() == WAIT_TIMEOUT)
+				uprintf("Warning: Time-out while trying to query drive %c", toupper(drive[0]));
 			continue;
 		}
 
@@ -1261,7 +1269,7 @@ char GetUnusedDriveLetter(void)
 		return 0;
 	}
 	if (size > sizeof(drives)) {
-		uprintf("GetLogicalDriveStrings: Buffer too small (required %d vs. %d)", size, sizeof(drives));
+		uprintf("GetLogicalDriveStrings: Buffer too small (required %lu vs. %zu)", size, sizeof(drives));
 		return 0;
 	}
 
@@ -1290,7 +1298,7 @@ BOOL IsDriveLetterInUse(const char drive_letter)
 		return TRUE;
 	}
 	if (size > sizeof(drives)) {
-		uprintf("GetLogicalDriveStrings: Buffer too small (required %d vs. %d)", size, sizeof(drives));
+		uprintf("GetLogicalDriveStrings: Buffer too small (required %lu vs. %zu)", size, sizeof(drives));
 		return TRUE;
 	}
 
@@ -1342,8 +1350,7 @@ BOOL GetDriveLabel(DWORD DriveIndex, char* letters, char** label)
 	if (DeviceIoControl(hPhysical, IOCTL_STORAGE_CHECK_VERIFY, NULL, 0, NULL, 0, &size, NULL))
 		AutorunLabel = get_token_data_file("label", AutorunPath);
 	else if (GetLastError() == ERROR_NOT_READY)
-		uprintf("Ignoring 'autorun.inf' label for drive %c: %s", toupper(letters[0]),
-		(HRESULT_CODE(GetLastError()) == ERROR_NOT_READY)?"No media":WindowsErrorString());
+		uprintf("Ignoring 'autorun.inf' label for drive %c: No media", toupper(letters[0]));
 	safe_closehandle(hPhysical);
 	if (AutorunLabel != NULL) {
 		uprintf("Using 'autorun.inf' label for drive %c: '%s'", toupper(letters[0]), AutorunLabel);
@@ -1587,7 +1594,7 @@ BOOL ToggleEsp(DWORD DriveIndex, uint64_t PartitionOffset)
 		{ 0x0c, { 'F', 'A', 'T', '3', '2', ' ', ' ', ' ' } },
 	};
 
-	if ((PartitionOffset == 0) && (nWindowsVersion < WINDOWS_10)) {
+	if ((PartitionOffset == 0) && (WindowsVersion.Version < WINDOWS_10)) {
 		uprintf("ESP toggling is only available for Windows 10 or later");
 		return FALSE;
 	}
@@ -2313,7 +2320,7 @@ BOOL CreatePartition(HANDLE hDrive, int partition_style, int file_system, BOOL m
 	// Having the ESP up front may help (and is the Microsoft recommended way) but this
 	// is only achievable if we can mount more than one partition at once, which means
 	// either fixed drive or Windows 10 1703 or later.
-	if (((SelectedDrive.MediaType == FixedMedia) || (nWindowsBuildNumber > 15000)) &&
+	if (((SelectedDrive.MediaType == FixedMedia) || (WindowsVersion.BuildNumber > 15000)) &&
 		(extra_partitions & XP_ESP)) {
 		assert(partition_style == PARTITION_STYLE_GPT);
 		extra_part_name = L"EFI System Partition";
@@ -2602,14 +2609,12 @@ BOOL InitializeDisk(HANDLE hDrive)
 			(BYTE*)&CreateDisk, size, NULL, 0, &size, NULL );
 	if (!r) {
 		uprintf("Could not delete drive layout: %s", WindowsErrorString());
-		safe_closehandle(hDrive);
 		return FALSE;
 	}
 
 	r = DeviceIoControl(hDrive, IOCTL_DISK_UPDATE_PROPERTIES, NULL, 0, NULL, 0, &size, NULL );
 	if (!r) {
 		uprintf("Could not refresh drive layout: %s", WindowsErrorString());
-		safe_closehandle(hDrive);
 		return FALSE;
 	}
 
