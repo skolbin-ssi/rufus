@@ -1,4 +1,4 @@
-AC_INIT([rufus], [4.0], [https://github.com/pbatard/rufus/issues], [rufus], [https://rufus.ie])
+AC_INIT([rufus], [4.6], [https://github.com/pbatard/rufus/issues], [rufus], [https://rufus.ie])
 AM_INIT_AUTOMAKE([-Wno-portability foreign no-dist no-dependencies])
 AC_CONFIG_SRCDIR([src/rufus.c])
 AC_CONFIG_MACRO_DIR([m4])
@@ -18,7 +18,7 @@ AC_CHECK_TOOL(WINDRES, windres, :)
 AC_C_INLINE
 AC_DEFINE([_GNU_SOURCE], [], [Use GNU extensions])
 
-AM_CFLAGS="${AM_CFLAGS} -DWINVER=0x601 -D_WIN32_WINNT=0x601 -D_WIN32_IE=0x800"
+AM_CFLAGS="${AM_CFLAGS} -DWINVER=0x0A00 -D_WIN32_WINNT=0x0A00 -D_WIN32_IE=0x0A00"
 # "-Wl,--nxcompat" to enable DEP (Data Execution Prevention)
 # "-Wl,--dynamicbase" to enable ASLR (Address Space Layout Randomization)
 AM_LDFLAGS="${AM_LDFLAGS} -Wl,-no-undefined -Wl,--nxcompat -Wl,--no-insert-timestamp -Wl,--dynamicbase"

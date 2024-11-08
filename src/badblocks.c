@@ -4,7 +4,7 @@
  * Copyright 1992-1994 Remy Card <card@masi.ibp.fr>
  * Copyright 1995-1999 Theodore Ts'o
  * Copyright 1999 David Beattie
- * Copyright 2011-2023 Pete Batard <pete@akeo.ie>
+ * Copyright 2011-2024 Pete Batard <pete@akeo.ie>
  *
  * This file is based on the minix file system programs fsck and mkfs
  * written and copyrighted by Linus Torvalds <Linus.Torvalds@cs.helsinki.fi>
@@ -318,7 +318,7 @@ static void CALLBACK alarm_intr(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dw
 {
 	if (!num_blocks)
 		return;
-	if (FormatStatus) {
+	if (ErrorStatus) {
 		uprintf("%sInterrupting at block %" PRIu64 "\n", bb_prefix,
 			(unsigned long long) currently_testing);
 		cancel_ops = -1;
@@ -423,6 +423,11 @@ static unsigned int test_rw(HANDLE hDrive, blk64_t last_block, size_t block_size
 	}
 	if ((nb_passes < 1) || (nb_passes > BADBLOCK_PATTERN_COUNT)) {
 		uprintf("%sInvalid number of passes\n", bb_prefix);
+		cancel_ops = -1;
+		return 0;
+	}
+	if ((first_block * block_size > 1 * PB) || (last_block * block_size > 1 * PB)) {
+		uprintf("%sDisk is too large\n", bb_prefix);
 		cancel_ops = -1;
 		return 0;
 	}
@@ -543,8 +548,12 @@ static unsigned int test_rw(HANDLE hDrive, blk64_t last_block, size_t block_size
 			for (i=0; i < got; i++) {
 				if (memcmp(read_buffer + i * block_size,
 					   buffer + i * block_size,
-					   block_size))
+					   block_size)) {
+					if_not_assert(currently_testing * block_size < 1 * PB) 
+						goto out;
+					// coverity[overflow_const]
 					bb_count += bb_output(currently_testing+i-got, CORRUPTION_ERROR);
+				}
 			}
 			if (v_flag > 1)
 				print_status();

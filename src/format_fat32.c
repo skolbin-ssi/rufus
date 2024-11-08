@@ -2,7 +2,7 @@
  * Rufus: The Reliable USB Formatting Utility
  * Large FAT32 formatting
  * Copyright © 2007-2009 Tom Thornhill/Ridgecrop
- * Copyright © 2011-2022 Pete Batard <pete@akeo.ie>
+ * Copyright © 2011-2024 Pete Batard <pete@akeo.ie>
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -38,9 +38,7 @@
 #include "msapi_utf8.h"
 #include "localization.h"
 
-#define die(msg, err) do { uprintf(msg); \
-	FormatStatus = ERROR_SEVERITY_ERROR|FAC(FACILITY_STORAGE)|err; \
-	goto out; } while(0)
+#define die(msg, err) do { uprintf(msg); ErrorStatus = RUFUS_ERROR(err); goto out; } while(0)
 
 extern BOOL write_as_esp;
 
@@ -175,6 +173,7 @@ BOOL FormatLargeFAT32(DWORD DriveIndex, uint64_t PartitionOffset, DWORD ClusterS
 	DWORD BytesPerSect = 0;
 	DWORD SectorsPerCluster = 0;
 	DWORD TotalSectors = 0;
+	DWORD AlignSectors = 0;
 	DWORD SystemAreaSize = 0;
 	DWORD UserAreaSize = 0;
 	ULONGLONG qTotalSectors = 0;
@@ -190,7 +189,7 @@ BOOL FormatLargeFAT32(DWORD DriveIndex, uint64_t PartitionOffset, DWORD ClusterS
 	ULONGLONG FatNeeded, ClusterCount;
 
 	if (safe_strncmp(FSName, "FAT", 3) != 0) {
-		FormatStatus = ERROR_SEVERITY_ERROR | FAC(FACILITY_STORAGE) | ERROR_INVALID_PARAMETER;
+		ErrorStatus = RUFUS_ERROR(ERROR_INVALID_PARAMETER);
 		goto out;
 	}
 	PrintInfoDebug(0, MSG_222, "Large FAT32");
@@ -201,7 +200,7 @@ BOOL FormatLargeFAT32(DWORD DriveIndex, uint64_t PartitionOffset, DWORD ClusterS
 	hLogicalVolume = write_as_esp ?
 		AltGetLogicalHandle(DriveIndex, PartitionOffset, TRUE, TRUE, FALSE) :
 		GetLogicalHandle(DriveIndex, PartitionOffset, TRUE, TRUE, FALSE);
-	if (IS_ERROR(FormatStatus))
+	if (IS_ERROR(ErrorStatus))
 		goto out;
 	if ((hLogicalVolume == INVALID_HANDLE_VALUE) || (hLogicalVolume == NULL))
 		die("Invalid logical volume handle", ERROR_INVALID_HANDLE);
@@ -221,7 +220,7 @@ BOOL FormatLargeFAT32(DWORD DriveIndex, uint64_t PartitionOffset, DWORD ClusterS
 	}
 	if (dgDrive.BytesPerSector < 512)
 		dgDrive.BytesPerSector = 512;
-	if (IS_ERROR(FormatStatus)) goto out;
+	if (IS_ERROR(ErrorStatus)) goto out;
 	if (!DeviceIoControl (hLogicalVolume, IOCTL_DISK_GET_PARTITION_INFO, NULL, 0, &piDrive,
 		sizeof(piDrive), &cbRet, NULL)) {
 		if (!DeviceIoControl (hLogicalVolume, IOCTL_DISK_GET_PARTITION_INFO_EX, NULL, 0, &xpiDrive,
@@ -235,7 +234,7 @@ BOOL FormatLargeFAT32(DWORD DriveIndex, uint64_t PartitionOffset, DWORD ClusterS
 		piDrive.PartitionLength.QuadPart = xpiDrive.PartitionLength.QuadPart;
 		piDrive.HiddenSectors = (DWORD)(xpiDrive.StartingOffset.QuadPart / dgDrive.BytesPerSector);
 	}
-	if (IS_ERROR(FormatStatus)) goto out;
+	if (IS_ERROR(ErrorStatus)) goto out;
 
 	BytesPerSect = dgDrive.BytesPerSector;
 
@@ -295,7 +294,6 @@ BOOL FormatLargeFAT32(DWORD DriveIndex, uint64_t PartitionOffset, DWORD ClusterS
 	SectorsPerCluster = ClusterSize / BytesPerSect;
 
 	pFAT32BootSect->bSecPerClus = (BYTE)SectorsPerCluster;
-	pFAT32BootSect->wRsvdSecCnt = (WORD)ReservedSectCount;
 	pFAT32BootSect->bNumFATs = (BYTE)NumFATs;
 	pFAT32BootSect->wRootEntCnt = 0;
 	pFAT32BootSect->wTotSec16 = 0;
@@ -310,6 +308,13 @@ BOOL FormatLargeFAT32(DWORD DriveIndex, uint64_t PartitionOffset, DWORD ClusterS
 	FatSize = GetFATSizeSectors(pFAT32BootSect->dTotSec32, pFAT32BootSect->wRsvdSecCnt,
 		pFAT32BootSect->bSecPerClus, pFAT32BootSect->bNumFATs, BytesPerSect);
 
+	// Update reserved sector count so that the start of data region is aligned to a MB boundary
+	SystemAreaSize = ReservedSectCount + NumFATs * FatSize;
+	AlignSectors = (1 * MB) / BytesPerSect;
+	SystemAreaSize = (SystemAreaSize + AlignSectors - 1) / AlignSectors * AlignSectors;
+	ReservedSectCount = SystemAreaSize - NumFATs * FatSize;
+
+	pFAT32BootSect->wRsvdSecCnt = (WORD)ReservedSectCount;
 	pFAT32BootSect->dFATSz32 = FatSize;
 	pFAT32BootSect->wExtFlags = 0;
 	pFAT32BootSect->wFSVer = 0;

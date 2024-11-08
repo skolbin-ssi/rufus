@@ -2,7 +2,7 @@
  * Library header for busybox/Bled
  *
  * Rewritten for Bled (Base Library for Easy Decompression)
- * Copyright © 2014-2022 Pete Batard <pete@akeo.ie>
+ * Copyright © 2014-2023 Pete Batard <pete@akeo.ie>
  *
  * Licensed under GPLv2 or later, see file LICENSE in this source tree.
  */
@@ -23,6 +23,7 @@
 #include "platform.h"
 #include "msapi_utf8.h"
 
+#include <assert.h>
 #include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -39,20 +40,24 @@
 #include <sys/types.h>
 #include <io.h>
 
-#define BB_BUFSIZE 0x40000
+#define ONE_TB                      1099511627776ULL
 
-#define ENABLE_DESKTOP 1
+#define ENABLE_DESKTOP              1
 #if ENABLE_DESKTOP
-#define IF_DESKTOP(x) x
+#define IF_DESKTOP(x)               x
 #define IF_NOT_DESKTOP(x)
 #else
 #define IF_DESKTOP(x)
-#define IF_NOT_DESKTOP(x) x
+#define IF_NOT_DESKTOP(x)           x
 #endif
 #define IF_NOT_FEATURE_LZMA_FAST(x) x
+#define ENABLE_FEATURE_UNZIP_CDF    1
+#define ENABLE_FEATURE_UNZIP_BZIP2  1
+#define ENABLE_FEATURE_UNZIP_LZMA   1
+#define ENABLE_FEATURE_UNZIP_XZ     1
 
-#define uoff_t unsigned off_t
-#define OFF_FMT PRIi64
+#define uoff_t                      unsigned off_t
+#define OFF_FMT                     "ll"
 
 #ifndef _MODE_T_
 #define _MODE_T_
@@ -100,6 +105,7 @@ typedef unsigned int uid_t;
 #define get_le16(ptr) (*(const uint16_t *)(ptr))
 #endif
 
+extern uint32_t BB_BUFSIZE;
 extern smallint bb_got_signal;
 extern uint32_t *global_crc32_table;
 extern jmp_buf bb_error_jmp;
@@ -163,7 +169,6 @@ static inline void *xrealloc(void *ptr, size_t size) {
 #define bb_msg_read_error "read error"
 #define bb_msg_write_error "write error"
 #define bb_mode_string(str, mode) "[not implemented]"
-#define bb_copyfd_exact_size(fd1, fd2, size) bb_error_msg("Not implemented")
 #define bb_make_directory(path, mode, flags) SHCreateDirectoryExU(NULL, path, NULL)
 
 static inline int link(const char *oldpath, const char *newpath) {errno = ENOSYS; return -1;}
@@ -186,6 +191,11 @@ static inline int full_read(int fd, void *buf, unsigned int count) {
 	}
 	if (buf == NULL) {
 		errno = EFAULT;
+		return -1;
+	}
+	/* None of our r/w buffers should be larger than BB_BUFSIZE */
+	if (count > BB_BUFSIZE) {
+		errno = E2BIG;
 		return -1;
 	}
 	if ((bled_cancel_request != NULL) && (*bled_cancel_request != 0)) {
@@ -212,7 +222,54 @@ static inline int full_read(int fd, void *buf, unsigned int count) {
 
 static inline int full_write(int fd, const void* buffer, unsigned int count)
 {
+	/* None of our r/w buffers should be larger than BB_BUFSIZE */
+	if (count > BB_BUFSIZE) {
+		errno = E2BIG;
+		return -1;
+	}
+
 	return (bled_write != NULL) ? bled_write(fd, buffer, count) : _write(fd, buffer, count);
+}
+
+static inline void bb_copyfd_exact_size(int fd1, int fd2, off_t size)
+{
+	off_t rb = 0;
+	uint8_t* buf = NULL;
+
+	if (fd1 < 0 || fd2 < 0)
+		bb_error_msg_and_die("invalid fd");
+
+	/* Enforce a 1 TB limit to keep Coverity happy */
+	if (size > ONE_TB)
+		bb_error_msg_and_die("too large");
+
+	buf = malloc(BB_BUFSIZE);
+	if (buf == NULL)
+		bb_error_msg_and_die("out of memory");
+
+	while (rb < size) {
+		int r, w;
+		r = full_read(fd1, buf, (unsigned int)MIN(size - rb, BB_BUFSIZE));
+		if (r < 0) {
+			free(buf);
+			bb_error_msg_and_die("read error");
+		}
+		if (r == 0) {
+			bb_error_msg("short read");
+			break;
+		}
+		w = full_write(fd2, buf, r);
+		if (w < 0) {
+			free(buf);
+			bb_error_msg_and_die("write error");
+		}
+		if (w != r) {
+			bb_error_msg("short write");
+			break;
+		}
+		rb += r;
+	}
+	free(buf);
 }
 
 static inline struct tm *localtime_r(const time_t *timep, struct tm *result) {
